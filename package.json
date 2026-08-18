@@ -1,7 +1,7 @@
 {
-  "name": "abstract-hero-ar-v5-stable-questions",
+  "name": "abstract-hero-ar-v6-60fps-skeleton",
   "private": true,
-  "version": "5.0.0",
+  "version": "6.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

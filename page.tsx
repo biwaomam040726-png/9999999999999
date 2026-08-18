@@ -78,6 +78,8 @@ type HandTrack = {
   fistSince: number;
   openSince: number;
   raisedSince: number;
+  targetLandmarks: Landmark[] | null;
+  renderLandmarks: Landmark[] | null;
 };
 
 type GestureAction = {
@@ -267,7 +269,7 @@ export default function Home() {
   const [levelIndex, setLevelIndex] = useState(0); const [deck, setDeck] = useState<CardItem[]>(() => shuffle(levels[0]?.items ?? [])); const [cardIndex, setCardIndex] = useState(0); const [timeLeft, setTimeLeft] = useState(14);
   const [players, setPlayers] = useState<[PlayerGame, PlayerGame]>([EMPTY_PLAYER(), EMPTY_PLAYER()]); const playersRef = useRef(players); useEffect(() => { playersRef.current = players; }, [players]);
   const [paused, setPaused] = useState(false); const [soloFeedback, setSoloFeedback] = useState<{ correct: boolean; title: string; body: string } | null>(null); const [burst, setBurst] = useState(0);
-  const [cameraOn, setCameraOn] = useState(false); const [cameraMessage, setCameraMessage] = useState("กำลังเตรียมกล้อง…"); const [soundOn, setSoundOn] = useState(true); const [voiceOn, setVoiceOn] = useState(true);
+  const [cameraOn, setCameraOn] = useState(false); const [cameraMessage, setCameraMessage] = useState("กำลังเตรียมกล้อง…"); const [cameraFps, setCameraFps] = useState(0); const [soundOn, setSoundOn] = useState(true); const [voiceOn, setVoiceOn] = useState(true);
   const [largeText, setLargeText] = useState(false); const [colorBlind, setColorBlind] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false);
   const [gestureLabel, setGestureLabel] = useState("กำลังเตรียม Hand AI"); const [handReady, setHandReady] = useState(false); const [handSelected, setHandSelected] = useState(false);
   const [playerReady, setPlayerReady] = useState<[boolean, boolean]>([false, false]); const playerReadyRef = useRef(playerReady); useEffect(() => { playerReadyRef.current = playerReady; }, [playerReady]);
@@ -275,6 +277,7 @@ export default function Home() {
   const [xrSupported, setXrSupported] = useState(false); const [xrActive, setXrActive] = useState(false); const [reports, setReports] = useState<StudentReport[]>([]);
 
   const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
+  const skeletonRefs = [useRef<HTMLCanvasElement>(null), useRef<HTMLCanvasElement>(null)] as const;
   const xrRendererRef = useRef<THREE.WebGLRenderer | null>(null); const startTimeRef = useRef(0); const actionRef = useRef<GestureAction | null>(null); const playSound = useSound(soundOn); const roundAdvanceRef = useRef<number | null>(null);
   const playableLevels = useMemo(() => { const ready = levels.filter(item => item.items.length > 0); return ready.length ? ready : normalizeLevels(LEVELS); }, [levels]);
   const level = playableLevels[levelIndex] ?? playableLevels[0]; const card = deck[cardIndex];
@@ -287,9 +290,11 @@ export default function Home() {
   const startCamera = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) { setCameraMessage("อุปกรณ์นี้ไม่รองรับกล้อง — เล่นด้วยสัมผัสได้"); return false; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, max: 60 } }, audio: false });
+      const cameraTrack = stream.getVideoTracks()[0]; if (cameraTrack && "contentHint" in cameraTrack) cameraTrack.contentHint = "motion";
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
-      setCameraOn(true); setCameraMessage("Camera AR พร้อมใช้งาน"); return true;
+      const actualFps = Number(cameraTrack?.getSettings?.().frameRate || 0); setCameraFps(actualFps ? Math.round(actualFps) : 60);
+      setCameraOn(true); setCameraMessage(actualFps ? `Camera AR ${Math.round(actualFps)} FPS · Hand Skeleton พร้อม` : "Camera AR 60 FPS · Hand Skeleton พร้อม"); return true;
     } catch { setCameraOn(false); setCameraMessage("กล้องถูกปิด — ยังเล่นด้วยปุ่มหรือคีย์บอร์ดได้"); return false; }
   }, []);
 
@@ -424,8 +429,31 @@ export default function Home() {
   useEffect(() => {
     if (!cameraOn || !videoRef.current) return;
     let cancelled = false; let animationFrame = 0; let landmarker: { detectForVideo: (video: HTMLVideoElement, now: number) => HandResult; close: () => void } | null = null;
-    let lastVideoTime = -1; let nextTrackId = 1; let lastInferenceAt = 0; let lastLabel = "";
-    const tracks = new Map<number, HandTrack>(); const primaryByPlayer: [number | null, number | null] = [null, null]; const powerHoldSince: [number, number] = [0, 0]; const powerLatched: [boolean, boolean] = [false, false];
+    let lastVideoTime = -1; let nextTrackId = 1; let lastInferenceAt = 0; let lastLabel = ""; let inferenceInterval = 20;
+    const tracks = new Map<number, HandTrack>();
+    const HAND_CONNECTIONS: [number, number][] = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],[5,13]];
+    const renderSkeletons = (now: number) => {
+      ([0,1] as PlayerId[]).forEach(owner => {
+        const canvas = skeletonRefs[owner].current; if (!canvas) return;
+        const visible = [...tracks.values()].filter(t => t.owner === owner && now - t.lastSeen < 260 && t.targetLandmarks?.length === 21);
+        const dpr = Math.min(window.devicePixelRatio || 1, 2); const width = innerWidth; const height = innerHeight;
+        if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) { canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); }
+        const ctx = canvas.getContext("2d"); if (!ctx) return; ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,width,height);
+        if (!visible.length) { canvas.style.opacity = "0"; return; } canvas.style.opacity = "1";
+        const lineColor = owner === 0 ? "rgba(110,232,255,.94)" : "rgba(199,154,255,.94)";
+        const glowColor = owner === 0 ? "rgba(87,219,255,.72)" : "rgba(181,118,255,.72)";
+        visible.slice(0,2).forEach(track => {
+          if (!track.targetLandmarks) return;
+          if (!track.renderLandmarks) track.renderLandmarks = track.targetLandmarks.map(v => ({...v}));
+          const lerp = track.primary ? .52 : .44;
+          track.renderLandmarks = track.renderLandmarks.map((v, i) => { const target = track.targetLandmarks![i]; return { x: v.x + (target.x - v.x) * lerp, y: v.y + (target.y - v.y) * lerp, z: v.z + (target.z - v.z) * lerp }; });
+          const pts = track.renderLandmarks.map(v => ({ x: (1 - v.x) * width, y: v.y * height }));
+          ctx.save(); ctx.globalAlpha = track.primary ? 1 : .56; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = lineColor; ctx.lineWidth = track.primary ? 3.2 : 2.4; ctx.shadowColor = glowColor; ctx.shadowBlur = track.primary ? 13 : 8;
+          ctx.beginPath(); HAND_CONNECTIONS.forEach(([a,b]) => { ctx.moveTo(pts[a].x,pts[a].y); ctx.lineTo(pts[b].x,pts[b].y); }); ctx.stroke();
+          pts.forEach((pt, i) => { ctx.beginPath(); ctx.fillStyle = (i===4 || i===8) ? "rgba(255,255,255,.98)" : lineColor; ctx.arc(pt.x,pt.y,i===0?6.4:4.2,0,Math.PI*2); ctx.fill(); }); ctx.restore();
+        });
+      });
+    }; const primaryByPlayer: [number | null, number | null] = [null, null]; const powerHoldSince: [number, number] = [0, 0]; const powerLatched: [boolean, boolean] = [false, false];
 
     const setLabel = (label: string) => { if (label !== lastLabel) { lastLabel = label; setGestureLabel(label); } };
     const setPlayerLabel = (player: PlayerId, label: string) => setPlayerGesture(current => { if (current[player] === label) return current; const next = [...current] as [string, string]; next[player] = label; return next; });
@@ -453,10 +481,13 @@ export default function Home() {
       const loop = () => {
         if (cancelled || !landmarker || !videoRef.current) return;
         const video = videoRef.current; const now = performance.now();
-        // Cap hand inference near 30fps. This makes the gesture history time-based and reduces UI jitter.
-        if (video.readyState >= 2 && video.currentTime !== lastVideoTime && now - lastInferenceAt >= 28) {
+        // Camera/UI render at 60fps. Hand inference adapts roughly 30–50fps so MediaPipe does not choke the main thread.
+        if (video.readyState >= 2 && video.currentTime !== lastVideoTime && now - lastInferenceAt >= inferenceInterval) {
           lastInferenceAt = now; lastVideoTime = video.currentTime;
-          const result = landmarker.detectForVideo(video, now); const hands = result.landmarks ?? []; const handedness = result.handedness ?? [];
+          const inferenceStarted = performance.now();
+          const result = landmarker.detectForVideo(video, now); const inferenceCost = performance.now() - inferenceStarted;
+          inferenceInterval = inferenceCost > 28 ? 34 : inferenceCost > 20 ? 28 : inferenceCost > 13 ? 23 : 18;
+          const hands = result.landmarks ?? []; const handedness = result.handedness ?? [];
           const observations = hands.map((hand, index) => {
             const center = palmCenter(hand); return { hand, x: center.x, y: center.y, palmWidth: clamp(distance(hand[5], hand[17]), .035, .28), handedness: handedness[index]?.[0]?.categoryName ?? "Unknown" };
           });
@@ -471,22 +502,22 @@ export default function Home() {
             });
             let track = best;
             if (!track) {
-              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, rawX: obs.x, rawY: obs.y, vx: 0, vy: 0, stableFrames: 0, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0 };
+              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, rawX: obs.x, rawY: obs.y, vx: 0, vy: 0, stableFrames: 0, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0, targetLandmarks: obs.hand.map(v => ({...v})), renderLandmarks: null };
               if (track.primary) primaryByPlayer[0] = track.id; tracks.set(track.id, track);
             }
             used.add(track.id);
             const frameDt = Math.max(.016, Math.min(.09, (now - track.lastSeen) / 1000 || .033)); const rawDx = obs.x - track.rawX; const rawDy = obs.y - track.rawY; const rawJump = Math.hypot(rawDx, rawDy);
             // Reject improbable landmark jumps while a track is already stable. A real fast swipe is still below this gate at 30fps.
             if (track.stableFrames > 8 && rawJump > Math.max(.19, track.palmWidth * 1.75)) return;
-            track.lastSeen = now; track.handedness = obs.handedness; track.vx = track.vx * .58 + rawDx / frameDt * .42; track.vy = track.vy * .58 + rawDy / frameDt * .42; track.rawX = obs.x; track.rawY = obs.y;
-            const speed = Math.hypot(track.vx, track.vy); const alpha = speed > .7 ? .56 : speed > .28 ? .42 : .28; track.x += (obs.x - track.x) * alpha; track.y += (obs.y - track.y) * alpha; track.palmWidth = track.palmWidth * .78 + obs.palmWidth * .22; track.stableFrames = Math.min(120, track.stableFrames + 1);
+            track.lastSeen = now; track.handedness = obs.handedness; track.vx = track.vx * .45 + rawDx / frameDt * .55; track.vy = track.vy * .45 + rawDy / frameDt * .55; track.rawX = obs.x; track.rawY = obs.y;
+            const speed = Math.hypot(track.vx, track.vy); const alpha = speed > .7 ? .78 : speed > .28 ? .62 : .46; track.x += (obs.x - track.x) * alpha; track.y += (obs.y - track.y) * alpha; track.palmWidth = track.palmWidth * .78 + obs.palmWidth * .22; track.stableFrames = Math.min(120, track.stableFrames + 1); track.targetLandmarks = obs.hand.map(v => ({...v}));
 
             const ext = fingerCount(obs.hand); const pinchRatio = distance(obs.hand[4], obs.hand[8]) / Math.max(.035, obs.palmWidth); const fist = ext <= 1 && [8, 12, 16, 20].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 < [5, 9, 13, 17].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 * 1.55;
             const open = ext >= 3 && !fist && pinchRatio > .55;
 
             // Pinch hysteresis: requires multiple frames to engage/release.
-            if (!track.pinchState) { track.pinchOnFrames = pinchRatio < .48 ? track.pinchOnFrames + 1 : 0; if (track.pinchOnFrames >= 3) { track.pinchState = true; track.pinchOffFrames = 0; } }
-            else { track.pinchOffFrames = pinchRatio > .62 ? track.pinchOffFrames + 1 : 0; if (track.pinchOffFrames >= 3) { track.pinchState = false; track.pinchOnFrames = 0; } }
+            if (!track.pinchState) { track.pinchOnFrames = pinchRatio < .48 ? track.pinchOnFrames + 1 : 0; if (track.pinchOnFrames >= 2) { track.pinchState = true; track.pinchOffFrames = 0; } }
+            else { track.pinchOffFrames = pinchRatio > .62 ? track.pinchOffFrames + 1 : 0; if (track.pinchOffFrames >= 2) { track.pinchState = false; track.pinchOnFrames = 0; } }
             track.openSince = open ? (track.openSince || now) : 0; track.fistSince = fist ? (track.fistSince || now) : 0;
 
             // VS calibration / re-acquisition. A primary hand is only acquired inside its own home zone with an open palm.
@@ -513,7 +544,7 @@ export default function Home() {
 
             track.trail.push({ x: track.x, y: track.y, at: now }); while (track.trail.length && now - track.trail[0].at > 680) track.trail.shift();
             const recentNeutral = track.trail.filter(s => now - s.at <= 150); const neutralDx = recentNeutral.length > 1 ? Math.abs(recentNeutral[recentNeutral.length - 1].x - recentNeutral[0].x) : 0;
-            if (!track.armed && now - track.lastActionAt > 300 && neutralDx < .022 && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 130) track.armed = true; } else if (neutralDx >= .028) track.neutralSince = 0;
+            if (!track.armed && now - track.lastActionAt > 220 && neutralDx < .024 && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 90) track.armed = true; } else if (neutralDx >= .032) track.neutralSince = 0;
 
             if (active.screen === "lobby") {
               if (mode === "solo" && open && track.openSince && now - track.openSince > 650 && now - track.lastActionAt > 1100) { setLabel("Open Palm · START"); active.beginGame(); track.lastActionAt = now; track.openSince = 0; }
@@ -530,18 +561,18 @@ export default function Home() {
 
             // Pinch -> select. Fist after pinch -> keep. Both use time hysteresis, not one-frame poses.
             if (track.pinchState) { track.selectedLatch = true; setHandSelected(true); setPlayerLabel(owner, "PINCH · เลือกการ์ด"); if (mode === "solo") setLabel("Pinch · เลือกการ์ด"); }
-            if (track.selectedLatch && fist && track.fistSince && now - track.fistSince > 230 && now - track.lastActionAt > 360) {
+            if (track.selectedLatch && fist && track.fistSince && now - track.fistSince > 150 && now - track.lastActionAt > 260) {
               setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.confirm(owner); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
             }
 
             // Swipe = roughly one palm width, horizontal-dominant, velocity constrained, one-shot until neutral re-arm.
-            if (!track.armed || track.pinchState || fist || ext < 2 || now - track.lastActionAt < 360 || track.trail.length < 4) return;
-            const windowSamples = track.trail.filter(s => now - s.at <= 560); if (windowSamples.length < 4) return;
+            if (!track.armed || track.pinchState || fist || ext < 2 || now - track.lastActionAt < 250 || track.trail.length < 3) return;
+            const windowSamples = track.trail.filter(s => now - s.at <= 500); if (windowSamples.length < 3) return;
             let min = windowSamples[0]; let max = windowSamples[0]; windowSamples.forEach(s => { if (s.x < min.x) min = s; if (s.x > max.x) max = s; });
             const currentSample = windowSamples[windowSamples.length - 1]; const rightDx = currentSample.x - min.x; const leftDx = max.x - currentSample.x; const dir = rightDx >= leftDx ? 1 : -1; const start = dir > 0 ? min : max; const dx = currentSample.x - start.x; const dy = currentSample.y - start.y; const duration = Math.max(1, (currentSample.at - start.at) / 1000); const velocity = Math.abs(dx) / duration;
-            const threshold = clamp(track.palmWidth * .84, .074, .138);
+            const threshold = clamp(track.palmWidth * .72, .060, .125);
             let forward = 0; let backward = 0; for (let i = 1; i < windowSamples.length; i += 1) { const step = (windowSamples[i].x - windowSamples[i - 1].x) * dir; if (step > .002) forward += step; else if (step < -.002) backward += Math.abs(step); } const monotonic = forward / Math.max(.001, forward + backward);
-            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.28 && duration >= .10 && duration <= .72 && velocity >= .16 && monotonic >= .68) {
+            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.18 && duration >= .08 && duration <= .68 && velocity >= .13 && monotonic >= .62) {
               const kind: AnswerKind = dx > 0 ? "essential" : "noise"; const label = active.questionMode === "mcq" ? (dx > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า") : (dx > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
               setPlayerLabel(owner, label); if (mode === "solo") setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
             }
@@ -566,12 +597,13 @@ export default function Home() {
 
           if (!hands.length) { setLabel(mode === "versus" ? "ไม่พบมือ · กลับเข้าฝั่งของตัวเองแล้วยกฝ่ามือ" : "ไม่พบมือ · ยกมือให้เห็นเต็มฝ่ามือ"); }
         }
+        renderSkeletons(now);
         animationFrame = requestAnimationFrame(loop);
       };
       loop();
     };
     void boot();
-    return () => { cancelled = true; cancelAnimationFrame(animationFrame); landmarker?.close(); setHandReady(false); };
+    return () => { cancelled = true; cancelAnimationFrame(animationFrame); landmarker?.close(); tracks.clear(); skeletonRefs.forEach(ref => { const canvas = ref.current; if (!canvas) return; const ctx = canvas.getContext("2d"); ctx?.clearRect(0,0,canvas.width,canvas.height); canvas.style.opacity = "0"; }); setHandReady(false); };
   }, [cameraOn, mode]);
 
   const startWebXR = useCallback(async () => {
@@ -608,13 +640,15 @@ export default function Home() {
       <section className="ar-stage" aria-label="พื้นที่เล่นเกม Abstract Hero AR">
         <video ref={videoRef} className={`camera-feed ${cameraOn ? "is-on" : ""}`} muted playsInline aria-label="ภาพจากกล้องของผู้เล่น" />
         <div className="camera-vignette" /><div className="scanlines" /><HologramScene burst={burst} onRendererReady={onRendererReady} />
-        <div ref={cursorRefs[0]} className={`hand-cursor player-one-cursor ${handSelected ? "pinched" : ""}`}><span /></div>
-        {mode === "versus" && <div ref={cursorRefs[1]} className="hand-cursor player-two-cursor"><span /></div>}
+        <canvas ref={skeletonRefs[0]} className="hand-skeleton player-one-skeleton" aria-hidden="true" />
+        {mode === "versus" && <canvas ref={skeletonRefs[1]} className="hand-skeleton player-two-skeleton" aria-hidden="true" />}
+        <div ref={cursorRefs[0]} className={`hand-cursor player-one-cursor skeleton-center ${handSelected ? "pinched" : ""}`}><span /></div>
+        {mode === "versus" && <div ref={cursorRefs[1]} className="hand-cursor player-two-cursor skeleton-center"><span /></div>}
         {mode === "versus" && <div className="player-zone-overlay" aria-hidden="true"><div className="zone-left">P1</div><div className="zone-dead"><span>SAFE<br />ZONE</span></div><div className="zone-right">P2</div></div>}
 
         <header className="topbar glass-panel">
           <button className="brand" onClick={() => setScreen("lobby")} aria-label="กลับหน้าหลัก"><span className="brand-mark"><Sparkles size={18} /></span><span><strong>ABSTRACT</strong><small>HERO AR</small></span></button>
-          <div className="top-status" aria-live="polite"><span className={`status-dot ${cameraOn && handReady ? "active" : ""}`} />{handReady ? `HAND AI ACTIVE · ${gestureLabel}` : cameraMessage}</div>
+          <div className="top-status" aria-live="polite"><span className={`status-dot ${cameraOn && handReady ? "active" : ""}`} />{handReady ? `HAND AI ACTIVE · ${cameraFps || 60} FPS CAM / 60 FPS RENDER · ${gestureLabel}` : cameraMessage}</div>
           <nav className="top-actions" aria-label="เครื่องมือ">
             {screen === "game" && <button className="exit-game-button" onClick={exitGame}><LogOut size={17} /><span>ออกจากเกม</span></button>}
             <button className="teacher-nav-button" onClick={() => setScreen(screen === "teacher" ? "lobby" : "teacher")}><BarChart3 size={17} /><span>สำหรับครู</span></button>
