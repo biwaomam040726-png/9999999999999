@@ -4,8 +4,8 @@ import "./globals.css";
 import {
   Accessibility, ArrowLeft, ArrowRight, BarChart3, Camera, Check, ChevronLeft,
   Download, FileSpreadsheet, Gamepad2, GraduationCap, Hand, Keyboard, LogOut,
-  Pause, Play, RotateCcw, Settings, ShieldCheck, Sparkles, Swords, Trophy, Users,
-  Volume2, VolumeX, X, Zap,
+  Pause, Play, Plus, RotateCcw, Save, Settings, ShieldCheck, Sparkles, Swords, Trash2, Trophy, Upload, Users,
+  Volume2, VolumeX, X, Zap, ListChecks,
 } from "lucide-react";
 import * as THREE from "three";
 import { gsap } from "gsap";
@@ -14,9 +14,22 @@ type Screen = "lobby" | "game" | "summary" | "teacher";
 type GameMode = "solo" | "versus";
 type PlayerId = 0 | 1;
 type AnswerKind = "essential" | "noise";
-type CardItem = { label: string; detail: string; essential: boolean; icon: string };
+type QuestionMode = "classify" | "mcq";
+type CardItem = {
+  id?: string;
+  mode?: QuestionMode;
+  label: string;
+  detail: string;
+  essential?: boolean;
+  icon: string;
+  prompt?: string;
+  leftLabel?: string;
+  rightLabel?: string;
+  choices?: string[];
+  correctChoice?: number;
+};
 type Level = { id: number; eyebrow: string; title: string; mission: string; subject: string; subjectIcon: string; enemy: string; items: CardItem[] };
-type AnswerRecord = CardItem & { level: number; correct: boolean; chosen: AnswerKind; timeout?: boolean };
+type AnswerRecord = CardItem & { level: number; correct: boolean; chosen: string; timeout?: boolean };
 type StudentReport = { id: number; name: string; score: number; accuracy: number; correct: number; total: number; seconds: number; level: number; date: string; mode?: GameMode };
 type Landmark = { x: number; y: number; z: number };
 type HandednessCategory = { categoryName?: string; score?: number };
@@ -32,7 +45,8 @@ type PlayerGame = {
   lives: number;
   power: number;
   answered: boolean;
-  feedback: null | { correct: boolean; title: string };
+  feedback: null | { correct: boolean; title: string; points: number; chosen: string; motion: "left" | "right" | "option" };
+  choiceIndex: number;
   records: AnswerRecord[];
 };
 
@@ -48,6 +62,11 @@ type HandTrack = {
   x: number;
   y: number;
   palmWidth: number;
+  rawX: number;
+  rawY: number;
+  vx: number;
+  vy: number;
+  stableFrames: number;
   trail: TrackSample[];
   lastActionAt: number;
   armed: boolean;
@@ -65,9 +84,11 @@ type GestureAction = {
   screen: Screen;
   mode: GameMode;
   paused: boolean;
+  questionMode: QuestionMode;
   soloFeedback: unknown;
   beginGame: () => void;
-  classify: (player: PlayerId, kind: AnswerKind) => void;
+  swipe: (player: PlayerId, kind: AnswerKind) => void;
+  confirm: (player: PlayerId) => void;
   usePower: (player: PlayerId) => void;
   togglePause: () => void;
 };
@@ -137,7 +158,7 @@ const LEVELS: Level[] = [
   },
 ];
 
-const EMPTY_PLAYER = (): PlayerGame => ({ score: 0, combo: 0, lives: 3, power: 2, answered: false, feedback: null, records: [] });
+const EMPTY_PLAYER = (): PlayerGame => ({ score: 0, combo: 0, lives: 3, power: 2, answered: false, feedback: null, choiceIndex: 0, records: [] });
 const shuffle = <T,>(items: T[]) => [...items].sort(() => Math.random() - 0.5);
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const distance = (a: Landmark, b: Landmark) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -153,6 +174,28 @@ const palmCenter = (hand: Landmark[]) => {
   const y = ids.reduce((sum, i) => sum + hand[i].y, 0) / ids.length;
   return { x: 1 - x, y };
 };
+
+const normalizeLevels = (source: Level[]): Level[] => source.map((level, levelIndex) => ({
+  ...level,
+  id: Number(level.id || levelIndex + 1),
+  items: (level.items ?? []).map((item, questionIndex) => ({
+    ...item,
+    id: item.id || `q-${levelIndex + 1}-${questionIndex + 1}-${Date.now().toString(36)}`,
+    mode: item.mode || "classify",
+    prompt: item.prompt || `ข้อมูลนี้จำเป็นต่อการอธิบาย “${level.subject}” หรือไม่?`,
+    leftLabel: item.leftLabel || "ไม่สำคัญ",
+    rightLabel: item.rightLabel || "เก็บไว้",
+    choices: item.mode === "mcq" ? (item.choices?.length ? item.choices : ["คำตอบ 1", "คำตอบ 2"]) : item.choices,
+    correctChoice: item.mode === "mcq" ? clamp(Number(item.correctChoice ?? 0), 0, Math.max(0, (item.choices?.length ?? 2) - 1)) : item.correctChoice,
+  })),
+}));
+const questionPrompt = (item: CardItem, level: Level) => item.prompt?.trim() || `ข้อมูลนี้จำเป็นต่อการอธิบาย “${level.subject}” หรือไม่?`;
+const questionMode = (item: CardItem): QuestionMode => item.mode || "classify";
+
+type QuestionDraft = {
+  editingId: string | null; levelIndex: number; mode: QuestionMode; label: string; prompt: string; detail: string; icon: string; essential: boolean; leftLabel: string; rightLabel: string; choices: string[]; correctChoice: number;
+};
+const blankQuestionDraft = (): QuestionDraft => ({ editingId: null, levelIndex: 0, mode: "classify", label: "", prompt: "", detail: "", icon: "✨", essential: true, leftLabel: "ไม่สำคัญ", rightLabel: "เก็บไว้", choices: ["คำตอบ 1", "คำตอบ 2"], correctChoice: 0 });
 const fingerCount = (hand: Landmark[]) => {
   const fingers = [[5, 6, 8], [9, 10, 12], [13, 14, 16], [17, 18, 20]];
   return fingers.filter(([mcp, pip, tip]) => angle(hand[mcp], hand[pip], hand[tip]) > 145 && distance(hand[tip], hand[0]) > distance(hand[pip], hand[0]) * 1.08).length;
@@ -212,8 +255,16 @@ function HologramScene({ burst, onRendererReady }: { burst: number; onRendererRe
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("lobby"); const [mode, setMode] = useState<GameMode>("solo");
+  const [levels, setLevels] = useState<Level[]>(() => {
+    try { const saved = localStorage.getItem("abstract-hero-question-bank-v5"); if (saved) { const parsed = JSON.parse(saved) as Level[]; if (Array.isArray(parsed) && parsed.length) return normalizeLevels(parsed); } } catch { /* use defaults */ }
+    return normalizeLevels(LEVELS);
+  });
+  const levelsRef = useRef(levels); useEffect(() => { levelsRef.current = levels; try { localStorage.setItem("abstract-hero-question-bank-v5", JSON.stringify(levels)); } catch { /* optional */ } }, [levels]);
+  const [teacherTab, setTeacherTab] = useState<"results" | "questions">("results");
+  const [questionDraft, setQuestionDraft] = useState<QuestionDraft>(() => blankQuestionDraft());
+  const importQuestionsRef = useRef<HTMLInputElement>(null);
   const [studentName, setStudentName] = useState(""); const [player2Name, setPlayer2Name] = useState("");
-  const [levelIndex, setLevelIndex] = useState(0); const [deck, setDeck] = useState<CardItem[]>(() => shuffle(LEVELS[0].items)); const [cardIndex, setCardIndex] = useState(0); const [timeLeft, setTimeLeft] = useState(14);
+  const [levelIndex, setLevelIndex] = useState(0); const [deck, setDeck] = useState<CardItem[]>(() => shuffle(levels[0]?.items ?? [])); const [cardIndex, setCardIndex] = useState(0); const [timeLeft, setTimeLeft] = useState(14);
   const [players, setPlayers] = useState<[PlayerGame, PlayerGame]>([EMPTY_PLAYER(), EMPTY_PLAYER()]); const playersRef = useRef(players); useEffect(() => { playersRef.current = players; }, [players]);
   const [paused, setPaused] = useState(false); const [soloFeedback, setSoloFeedback] = useState<{ correct: boolean; title: string; body: string } | null>(null); const [burst, setBurst] = useState(0);
   const [cameraOn, setCameraOn] = useState(false); const [cameraMessage, setCameraMessage] = useState("กำลังเตรียมกล้อง…"); const [soundOn, setSoundOn] = useState(true); const [voiceOn, setVoiceOn] = useState(true);
@@ -225,8 +276,9 @@ export default function Home() {
 
   const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
   const xrRendererRef = useRef<THREE.WebGLRenderer | null>(null); const startTimeRef = useRef(0); const actionRef = useRef<GestureAction | null>(null); const playSound = useSound(soundOn); const roundAdvanceRef = useRef<number | null>(null);
-  const level = LEVELS[levelIndex]; const card = deck[cardIndex];
-  const totalQuestions = LEVELS.reduce((sum, item) => sum + item.items.length, 0); const completedQuestions = LEVELS.slice(0, levelIndex).reduce((sum, item) => sum + item.items.length, 0) + cardIndex; const progress = completedQuestions / totalQuestions * 100;
+  const playableLevels = useMemo(() => { const ready = levels.filter(item => item.items.length > 0); return ready.length ? ready : normalizeLevels(LEVELS); }, [levels]);
+  const level = playableLevels[levelIndex] ?? playableLevels[0]; const card = deck[cardIndex];
+  const totalQuestions = Math.max(1, playableLevels.reduce((sum, item) => sum + item.items.length, 0)); const completedQuestions = playableLevels.slice(0, levelIndex).reduce((sum, item) => sum + item.items.length, 0) + cardIndex; const progress = completedQuestions / totalQuestions * 100;
   const soloAccuracy = players[0].records.length ? Math.round(players[0].records.filter((record) => record.correct).length / players[0].records.length * 100) : 100;
   const onRendererReady = useCallback((renderer: THREE.WebGLRenderer | null) => { xrRendererRef.current = renderer; }, []);
 
@@ -250,9 +302,9 @@ export default function Home() {
 
   const saveReport = useCallback((player: PlayerGame, name: string) => {
     const total = player.records.length; const accuracy = total ? Math.round(player.records.filter(r => r.correct).length / total * 100) : 0;
-    const report: StudentReport = { id: Date.now() + Math.random(), name: name.trim() || "Abstract Hero", score: player.score, accuracy, correct: player.records.filter(r => r.correct).length, total, seconds: Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000)), level: 5, date: new Date().toLocaleString("th-TH"), mode };
+    const report: StudentReport = { id: Date.now() + Math.random(), name: name.trim() || "Abstract Hero", score: player.score, accuracy, correct: player.records.filter(r => r.correct).length, total, seconds: Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000)), level: playableLevels.length, date: new Date().toLocaleString("th-TH"), mode };
     setReports(current => { const next = [report, ...current].slice(0, 80); try { localStorage.setItem("abstract-hero-reports", JSON.stringify(next)); } catch { /* optional */ } return next; });
-  }, [mode]);
+  }, [mode, playableLevels.length]);
 
   const finishGame = useCallback(() => {
     const finalPlayers = playersRef.current; saveReport(finalPlayers[0], studentName || (mode === "versus" ? "Player 1" : "Abstract Hero")); if (mode === "versus") saveReport(finalPlayers[1], player2Name || "Player 2");
@@ -260,7 +312,7 @@ export default function Home() {
   }, [mode, playSound, player2Name, saveReport, speak, studentName]);
 
   const resetRoundState = useCallback(() => {
-    setSoloFeedback(null); setPlayers(current => [{ ...current[0], answered: false, feedback: null }, { ...current[1], answered: false, feedback: null }]); setHandSelected(false);
+    setSoloFeedback(null); setPlayers(current => [{ ...current[0], answered: false, feedback: null, choiceIndex: 0 }, { ...current[1], answered: false, feedback: null, choiceIndex: 0 }]); setHandSelected(false);
   }, []);
 
   const advanceCard = useCallback(() => {
@@ -269,11 +321,11 @@ export default function Home() {
     if (cardIndex < deck.length - 1) {
       setCardIndex(value => value + 1); const accuracy = soloAccuracy; const adaptiveTime = accuracy >= 85 ? 11 : accuracy < 60 ? 16 : 13; setTimeLeft(levelIndex === 4 ? Math.max(8, adaptiveTime - 2) : adaptiveTime); return;
     }
-    if (levelIndex < LEVELS.length - 1) {
-      const nextLevel = levelIndex + 1; setLevelIndex(nextLevel); setDeck(shuffle(LEVELS[nextLevel].items)); setCardIndex(0); setTimeLeft(nextLevel === 4 ? 10 : 13); setPlayers(current => [{ ...current[0], combo: 0, power: Math.min(3, current[0].power + 1) }, { ...current[1], combo: 0, power: Math.min(3, current[1].power + 1) }]); speak(`เข้าสู่ด่านที่ ${nextLevel + 1} ${LEVELS[nextLevel].title}`); return;
+    if (levelIndex < playableLevels.length - 1) {
+      const nextLevel = levelIndex + 1; setLevelIndex(nextLevel); setDeck(shuffle(playableLevels[nextLevel].items)); setCardIndex(0); setTimeLeft(nextLevel === playableLevels.length - 1 ? 10 : 13); setPlayers(current => [{ ...current[0], combo: 0, power: Math.min(3, current[0].power + 1) }, { ...current[1], combo: 0, power: Math.min(3, current[1].power + 1) }]); speak(`เข้าสู่ด่านที่ ${nextLevel + 1} ${playableLevels[nextLevel].title}`); return;
     }
     finishGame();
-  }, [cardIndex, deck.length, finishGame, levelIndex, resetRoundState, soloAccuracy, speak]);
+  }, [cardIndex, deck.length, finishGame, levelIndex, playableLevels, resetRoundState, soloAccuracy, speak]);
 
   const scheduleAdvance = useCallback((delay = 1050) => {
     if (roundAdvanceRef.current) window.clearTimeout(roundAdvanceRef.current);
@@ -288,7 +340,7 @@ export default function Home() {
     const feedbackTitle = correct ? (card.essential ? "ถูก — นี่คือแก่นสำคัญ" : "ถูก — ตัดรายละเอียดรบกวน") : "ยังไม่ถูก";
     setPlayers(currentPlayers => {
       const next = [...currentPlayers] as [PlayerGame, PlayerGame]; const p = next[player];
-      next[player] = { ...p, score: Math.max(0, p.score + points), combo: nextCombo, lives: correct ? p.lives : Math.max(0, p.lives - 1), answered: true, feedback: { correct, title: feedbackTitle }, records: [...p.records, record] };
+      next[player] = { ...p, score: Math.max(0, p.score + points), combo: nextCombo, lives: correct ? p.lives : Math.max(0, p.lives - 1), answered: true, feedback: { correct, title: feedbackTitle, points, chosen: kind, motion: kind === "noise" ? "left" : "right" }, records: [...p.records, record] };
       playersRef.current = next; return next;
     });
     setBurst(value => value + 1); playSound(correct ? "success" : "error");
@@ -301,6 +353,33 @@ export default function Home() {
     }
   }, [card, level.id, mode, paused, playSound, scheduleAdvance, soloFeedback, speak, timeLeft]);
 
+
+  const answerMcqForPlayer = useCallback((player: PlayerId, choiceIndex: number) => {
+    const current = playersRef.current[player]; if (!card || questionMode(card) !== "mcq" || paused || current.answered || (mode === "solo" && soloFeedback)) return;
+    const choices = card.choices ?? []; if (!choices.length) return;
+    const safeIndex = clamp(choiceIndex, 0, choices.length - 1); const correctIndex = clamp(Number(card.correctChoice ?? 0), 0, choices.length - 1); const correct = safeIndex === correctIndex;
+    const nextCombo = correct ? current.combo + 1 : 0; let points = correct ? 12 : -5; if (correct && nextCombo >= 2) points += 4; if (correct && timeLeft >= 8) points += 3;
+    const chosen = choices[safeIndex] ?? `ตัวเลือก ${safeIndex + 1}`; const record: AnswerRecord = { ...card, level: level.id, correct, chosen };
+    const feedbackTitle = correct ? `ถูก — ${chosen}` : `ยังไม่ถูก — คำตอบคือ ${choices[correctIndex] ?? "ตัวเลือกที่ถูก"}`;
+    setPlayers(currentPlayers => { const next = [...currentPlayers] as [PlayerGame, PlayerGame]; const p = next[player]; next[player] = { ...p, score: Math.max(0, p.score + points), combo: nextCombo, lives: correct ? p.lives : Math.max(0, p.lives - 1), answered: true, choiceIndex: safeIndex, feedback: { correct, title: feedbackTitle, points, chosen, motion: "option" }, records: [...p.records, record] }; playersRef.current = next; return next; });
+    setBurst(value => value + 1); playSound(correct ? "success" : "error");
+    if (mode === "solo") { setSoloFeedback({ correct, title: feedbackTitle, body: card.detail }); speak(`${correct ? "ถูกต้อง" : "คำตอบนี้ยังไม่ถูก"} ${card.detail}`); }
+    else window.setTimeout(() => { if (playersRef.current[0].answered && playersRef.current[1].answered) scheduleAdvance(850); }, 0);
+  }, [card, level.id, mode, paused, playSound, scheduleAdvance, soloFeedback, speak, timeLeft]);
+
+  const changeMcqChoice = useCallback((player: PlayerId, delta: number) => {
+    if (!card || questionMode(card) !== "mcq" || playersRef.current[player].answered) return; const count = Math.max(1, card.choices?.length ?? 0);
+    setPlayers(current => { const next = [...current] as [PlayerGame, PlayerGame]; const p = next[player]; next[player] = { ...p, choiceIndex: (p.choiceIndex + delta + count) % count }; playersRef.current = next; return next; });
+    setPlayerGesture(current => { const next = [...current] as [string, string]; next[player] = delta > 0 ? "SWIPE RIGHT · เลื่อนคำตอบ" : "SWIPE LEFT · เลื่อนคำตอบ"; return next; });
+  }, [card]);
+
+  const handleSwipe = useCallback((player: PlayerId, kind: AnswerKind) => {
+    if (!card) return; if (questionMode(card) === "mcq") changeMcqChoice(player, kind === "essential" ? 1 : -1); else classifyForPlayer(player, kind);
+  }, [card, changeMcqChoice, classifyForPlayer]);
+  const confirmCurrentChoice = useCallback((player: PlayerId) => {
+    if (!card) return; if (questionMode(card) === "mcq") answerMcqForPlayer(player, playersRef.current[player].choiceIndex); else classifyForPlayer(player, "essential");
+  }, [answerMcqForPlayer, card, classifyForPlayer]);
+
   const activatePower = useCallback((player: PlayerId) => {
     const p = playersRef.current[player]; if (!card || p.power <= 0 || screen !== "game" || p.answered || paused) return;
     setPlayers(current => { const next = [...current] as [PlayerGame, PlayerGame]; next[player] = { ...next[player], power: Math.max(0, next[player].power - 1) }; playersRef.current = next; return next; });
@@ -308,39 +387,38 @@ export default function Home() {
   }, [card, mode, paused, playSound, screen, speak]);
 
   const beginGame = useCallback(() => {
-    startTimeRef.current = Date.now(); setLevelIndex(0); setDeck(shuffle(LEVELS[0].items)); setCardIndex(0); setTimeLeft(14); setPlayers([EMPTY_PLAYER(), EMPTY_PLAYER()]); setSoloFeedback(null); setPaused(false); setScreen("game"); playSound("power"); speak(mode === "versus" ? "เริ่มการแข่งขัน ผู้เล่นหนึ่งฝั่งซ้าย ผู้เล่นสองฝั่งขวา ปัดมือเฉพาะการ์ดของตัวเอง" : "ยินดีต้อนรับ Abstract Hero ปัดขวาเพื่อเก็บข้อมูลสำคัญ และปัดซ้ายเพื่อตัดรายละเอียดที่ไม่จำเป็น");
-  }, [mode, playSound, speak]);
+    startTimeRef.current = Date.now(); setLevelIndex(0); setDeck(shuffle(playableLevels[0].items)); setCardIndex(0); setTimeLeft(14); setPlayers([EMPTY_PLAYER(), EMPTY_PLAYER()]); setSoloFeedback(null); setPaused(false); setScreen("game"); playSound("power"); speak(mode === "versus" ? "เริ่มการแข่งขัน ผู้เล่นหนึ่งฝั่งซ้าย ผู้เล่นสองฝั่งขวา ปัดมือเฉพาะการ์ดของตัวเอง" : "ยินดีต้อนรับ Abstract Hero ปัดขวาเพื่อเก็บข้อมูลสำคัญ และปัดซ้ายเพื่อตัดรายละเอียดที่ไม่จำเป็น");
+  }, [mode, playSound, playableLevels, speak]);
 
   useEffect(() => {
     if (screen !== "game" || paused || (mode === "solo" && soloFeedback)) return;
     const timer = window.setInterval(() => setTimeLeft(value => {
       if (value > 1) return value - 1;
       window.clearInterval(timer);
-      if (mode === "solo") {
-        const fallback: AnswerKind = card?.essential ? "noise" : "essential"; window.setTimeout(() => classifyForPlayer(0, fallback), 0);
-      } else {
-        const current = playersRef.current; const fallback: AnswerKind = card?.essential ? "noise" : "essential";
-        if (!current[0].answered) window.setTimeout(() => classifyForPlayer(0, fallback), 0);
-        if (!current[1].answered) window.setTimeout(() => classifyForPlayer(1, fallback), 0);
-        window.setTimeout(() => scheduleAdvance(850), 50);
-      }
+      const timeoutPlayer = (player: PlayerId) => {
+        if (!card) return;
+        if (questionMode(card) === "mcq") { const choices = card.choices ?? []; if (choices.length) answerMcqForPlayer(player, (Number(card.correctChoice ?? 0) + 1) % choices.length); }
+        else { const fallback: AnswerKind = card.essential ? "noise" : "essential"; classifyForPlayer(player, fallback); }
+      };
+      if (mode === "solo") window.setTimeout(() => timeoutPlayer(0), 0);
+      else { const current = playersRef.current; if (!current[0].answered) window.setTimeout(() => timeoutPlayer(0), 0); if (!current[1].answered) window.setTimeout(() => timeoutPlayer(1), 0); window.setTimeout(() => scheduleAdvance(850), 50); }
       return 0;
     }), 1000);
     return () => window.clearInterval(timer);
-  }, [card?.essential, classifyForPlayer, mode, paused, scheduleAdvance, screen, soloFeedback]);
+  }, [answerMcqForPlayer, card, classifyForPlayer, mode, paused, scheduleAdvance, screen, soloFeedback]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (screen === "lobby" && event.key === "Enter" && (mode === "solo" || playerReadyRef.current.every(Boolean))) beginGame();
       if (screen !== "game") return;
-      if (mode === "solo") { if (event.key === "ArrowLeft") classifyForPlayer(0, "noise"); if (event.key === "ArrowRight") classifyForPlayer(0, "essential"); if (event.code === "Space") { event.preventDefault(); activatePower(0); } }
-      else { if (event.key.toLowerCase() === "a") classifyForPlayer(0, "noise"); if (event.key.toLowerCase() === "d") classifyForPlayer(0, "essential"); if (event.key === "ArrowLeft") classifyForPlayer(1, "noise"); if (event.key === "ArrowRight") classifyForPlayer(1, "essential"); }
+      if (mode === "solo") { if (event.key === "ArrowLeft") handleSwipe(0, "noise"); if (event.key === "ArrowRight") handleSwipe(0, "essential"); if (event.key === "Enter" && card && questionMode(card) === "mcq") confirmCurrentChoice(0); if (event.code === "Space") { event.preventDefault(); activatePower(0); } }
+      else { if (event.key.toLowerCase() === "a") handleSwipe(0, "noise"); if (event.key.toLowerCase() === "d") handleSwipe(0, "essential"); if (event.key.toLowerCase() === "w" && card && questionMode(card) === "mcq") confirmCurrentChoice(0); if (event.key === "ArrowLeft") handleSwipe(1, "noise"); if (event.key === "ArrowRight") handleSwipe(1, "essential"); if (event.key === "ArrowUp" && card && questionMode(card) === "mcq") confirmCurrentChoice(1); }
       if (event.key.toLowerCase() === "p") setPaused(value => !value);
     };
     window.addEventListener("keydown", handleKey); return () => window.removeEventListener("keydown", handleKey);
-  }, [activatePower, beginGame, classifyForPlayer, mode, screen]);
+  }, [activatePower, beginGame, card, confirmCurrentChoice, handleSwipe, mode, screen]);
 
-  useEffect(() => { actionRef.current = { screen, mode, paused, soloFeedback, beginGame, classify: classifyForPlayer, usePower: activatePower, togglePause: () => setPaused(value => !value) }; }, [activatePower, beginGame, classifyForPlayer, mode, paused, screen, soloFeedback]);
+  useEffect(() => { actionRef.current = { screen, mode, paused, questionMode: card ? questionMode(card) : "classify", soloFeedback, beginGame, swipe: handleSwipe, confirm: confirmCurrentChoice, usePower: activatePower, togglePause: () => setPaused(value => !value) }; }, [activatePower, beginGame, card, confirmCurrentChoice, handleSwipe, mode, paused, screen, soloFeedback]);
 
   // Robust hand tracking + gesture state machine.
   useEffect(() => {
@@ -393,10 +471,15 @@ export default function Home() {
             });
             let track = best;
             if (!track) {
-              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0 };
+              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, rawX: obs.x, rawY: obs.y, vx: 0, vy: 0, stableFrames: 0, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0 };
               if (track.primary) primaryByPlayer[0] = track.id; tracks.set(track.id, track);
             }
-            used.add(track.id); track.lastSeen = now; track.handedness = obs.handedness; track.x = track.x * .58 + obs.x * .42; track.y = track.y * .58 + obs.y * .42; track.palmWidth = track.palmWidth * .7 + obs.palmWidth * .3;
+            used.add(track.id);
+            const frameDt = Math.max(.016, Math.min(.09, (now - track.lastSeen) / 1000 || .033)); const rawDx = obs.x - track.rawX; const rawDy = obs.y - track.rawY; const rawJump = Math.hypot(rawDx, rawDy);
+            // Reject improbable landmark jumps while a track is already stable. A real fast swipe is still below this gate at 30fps.
+            if (track.stableFrames > 8 && rawJump > Math.max(.19, track.palmWidth * 1.75)) return;
+            track.lastSeen = now; track.handedness = obs.handedness; track.vx = track.vx * .58 + rawDx / frameDt * .42; track.vy = track.vy * .58 + rawDy / frameDt * .42; track.rawX = obs.x; track.rawY = obs.y;
+            const speed = Math.hypot(track.vx, track.vy); const alpha = speed > .7 ? .56 : speed > .28 ? .42 : .28; track.x += (obs.x - track.x) * alpha; track.y += (obs.y - track.y) * alpha; track.palmWidth = track.palmWidth * .78 + obs.palmWidth * .22; track.stableFrames = Math.min(120, track.stableFrames + 1);
 
             const ext = fingerCount(obs.hand); const pinchRatio = distance(obs.hand[4], obs.hand[8]) / Math.max(.035, obs.palmWidth); const fist = ext <= 1 && [8, 12, 16, 20].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 < [5, 9, 13, 17].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 * 1.55;
             const open = ext >= 3 && !fist && pinchRatio > .55;
@@ -409,9 +492,9 @@ export default function Home() {
             // VS calibration / re-acquisition. A primary hand is only acquired inside its own home zone with an open palm.
             if (mode === "versus" && track.owner === null) {
               const candidate = ownerZone(track.x);
-              if (candidate !== null && open && primaryByPlayer[candidate] === null) {
+              if (candidate !== null && open && track.stableFrames >= 8 && primaryByPlayer[candidate] === null) {
                 if (track.candidateOwner !== candidate) { track.candidateOwner = candidate; track.candidateSince = now; }
-                if (now - track.candidateSince >= 520) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
+                if (now - track.candidateSince >= 620) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
               } else { track.candidateOwner = null; track.candidateSince = 0; }
             }
 
@@ -430,7 +513,7 @@ export default function Home() {
 
             track.trail.push({ x: track.x, y: track.y, at: now }); while (track.trail.length && now - track.trail[0].at > 680) track.trail.shift();
             const recentNeutral = track.trail.filter(s => now - s.at <= 150); const neutralDx = recentNeutral.length > 1 ? Math.abs(recentNeutral[recentNeutral.length - 1].x - recentNeutral[0].x) : 0;
-            if (!track.armed && now - track.lastActionAt > 260 && neutralDx < .028 && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 100) track.armed = true; } else if (neutralDx >= .028) track.neutralSince = 0;
+            if (!track.armed && now - track.lastActionAt > 300 && neutralDx < .022 && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 130) track.armed = true; } else if (neutralDx >= .028) track.neutralSince = 0;
 
             if (active.screen === "lobby") {
               if (mode === "solo" && open && track.openSince && now - track.openSince > 650 && now - track.lastActionAt > 1100) { setLabel("Open Palm · START"); active.beginGame(); track.lastActionAt = now; track.openSince = 0; }
@@ -448,7 +531,7 @@ export default function Home() {
             // Pinch -> select. Fist after pinch -> keep. Both use time hysteresis, not one-frame poses.
             if (track.pinchState) { track.selectedLatch = true; setHandSelected(true); setPlayerLabel(owner, "PINCH · เลือกการ์ด"); if (mode === "solo") setLabel("Pinch · เลือกการ์ด"); }
             if (track.selectedLatch && fist && track.fistSince && now - track.fistSince > 230 && now - track.lastActionAt > 360) {
-              setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.classify(owner, "essential"); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
+              setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.confirm(owner); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
             }
 
             // Swipe = roughly one palm width, horizontal-dominant, velocity constrained, one-shot until neutral re-arm.
@@ -456,10 +539,11 @@ export default function Home() {
             const windowSamples = track.trail.filter(s => now - s.at <= 560); if (windowSamples.length < 4) return;
             let min = windowSamples[0]; let max = windowSamples[0]; windowSamples.forEach(s => { if (s.x < min.x) min = s; if (s.x > max.x) max = s; });
             const currentSample = windowSamples[windowSamples.length - 1]; const rightDx = currentSample.x - min.x; const leftDx = max.x - currentSample.x; const dir = rightDx >= leftDx ? 1 : -1; const start = dir > 0 ? min : max; const dx = currentSample.x - start.x; const dy = currentSample.y - start.y; const duration = Math.max(1, (currentSample.at - start.at) / 1000); const velocity = Math.abs(dx) / duration;
-            const threshold = clamp(track.palmWidth * 1.02, .095, .165);
-            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.45 && duration >= .11 && duration <= .56 && velocity >= .24) {
-              const kind: AnswerKind = dx > 0 ? "essential" : "noise"; const label = dx > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด";
-              setPlayerLabel(owner, label); if (mode === "solo") setLabel(label); active.classify(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
+            const threshold = clamp(track.palmWidth * .84, .074, .138);
+            let forward = 0; let backward = 0; for (let i = 1; i < windowSamples.length; i += 1) { const step = (windowSamples[i].x - windowSamples[i - 1].x) * dir; if (step > .002) forward += step; else if (step < -.002) backward += Math.abs(step); } const monotonic = forward / Math.max(.001, forward + backward);
+            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.28 && duration >= .10 && duration <= .72 && velocity >= .16 && monotonic >= .68) {
+              const kind: AnswerKind = dx > 0 ? "essential" : "noise"; const label = active.questionMode === "mcq" ? (dx > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า") : (dx > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
+              setPlayerLabel(owner, label); if (mode === "solo") setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
             }
           });
 
@@ -500,6 +584,21 @@ export default function Home() {
   const exitGame = useCallback(() => { if (roundAdvanceRef.current) window.clearTimeout(roundAdvanceRef.current); setPaused(false); setSoloFeedback(null); setScreen("lobby"); setPlayers([EMPTY_PLAYER(), EMPTY_PLAYER()]); setTimeLeft(14); }, []);
   const exportCsv = useCallback(() => { const rows = [["ชื่อผู้เรียน", "โหมด", "คะแนน", "ความแม่นยำ", "ตอบถูก", "จำนวนข้อ", "เวลา (วินาที)", "ด่านสูงสุด", "วันที่"], ...reports.map(r => [r.name, r.mode ?? "solo", r.score, `${r.accuracy}%`, r.correct, r.total, r.seconds, r.level, r.date])]; const csv = "\uFEFF" + rows.map(row => row.map(cell => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n"); const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); const link = document.createElement("a"); link.href = url; link.download = "abstract-hero-learning-report.csv"; link.click(); URL.revokeObjectURL(url); }, [reports]);
   const openGoogleSheets = useCallback(() => { const rows = [["ชื่อผู้เรียน", "โหมด", "คะแนน", "ความแม่นยำ", "ตอบถูก", "จำนวนข้อ", "เวลา (วินาที)", "ด่านสูงสุด", "วันที่"], ...reports.map(r => [r.name, r.mode ?? "solo", r.score, `${r.accuracy}%`, r.correct, r.total, r.seconds, r.level, r.date])]; void navigator.clipboard?.writeText(rows.map(row => row.join("\t")).join("\n")); window.open("https://sheets.new", "_blank", "noopener,noreferrer"); setGestureLabel("คัดลอกรายงานแล้ว · วางใน Google Sheets ได้ทันที"); }, [reports]);
+
+
+  const saveQuestionDraft = useCallback(() => {
+    const draft = questionDraft; if (!draft.label.trim() || !draft.detail.trim()) { setGestureLabel("กรอกหัวข้อคำถามและคำอธิบายให้ครบ"); return; }
+    const levelPos = clamp(draft.levelIndex, 0, Math.max(0, levels.length - 1)); const targetLevel = levels[levelPos]; if (!targetLevel) return;
+    const choices = draft.mode === "mcq" ? draft.choices.map(v => v.trim()).filter(Boolean) : undefined; if (draft.mode === "mcq" && (!choices || choices.length < 2)) { setGestureLabel("คำถามหลายตัวเลือกต้องมีอย่างน้อย 2 คำตอบ"); return; }
+    const nextItem: CardItem = { id: draft.editingId || `custom-${Date.now().toString(36)}`, mode: draft.mode, label: draft.label.trim(), prompt: draft.prompt.trim() || (draft.mode === "mcq" ? draft.label.trim() : `ข้อมูลนี้จำเป็นต่อการอธิบาย “${targetLevel.subject}” หรือไม่?`), detail: draft.detail.trim(), icon: draft.icon.trim() || "✨", essential: draft.mode === "classify" ? draft.essential : undefined, leftLabel: draft.leftLabel.trim() || "ไม่สำคัญ", rightLabel: draft.rightLabel.trim() || "เก็บไว้", choices, correctChoice: draft.mode === "mcq" ? clamp(draft.correctChoice, 0, Math.max(0, (choices?.length ?? 1) - 1)) : undefined };
+    setLevels(current => current.map((lvl, li) => li !== levelPos ? lvl : ({ ...lvl, items: draft.editingId ? lvl.items.map(item => item.id === draft.editingId ? nextItem : item) : [...lvl.items, nextItem] })));
+    setQuestionDraft({ ...blankQuestionDraft(), levelIndex: levelPos }); setGestureLabel(draft.editingId ? "แก้ไขคำถามแล้ว" : "เพิ่มคำถามใหม่แล้ว");
+  }, [levels, questionDraft]);
+  const editQuestion = useCallback((levelPos: number, item: CardItem) => { setQuestionDraft({ editingId: item.id || null, levelIndex: levelPos, mode: questionMode(item), label: item.label, prompt: item.prompt || "", detail: item.detail, icon: item.icon, essential: item.essential ?? true, leftLabel: item.leftLabel || "ไม่สำคัญ", rightLabel: item.rightLabel || "เก็บไว้", choices: item.choices?.length ? [...item.choices] : ["คำตอบ 1", "คำตอบ 2"], correctChoice: Number(item.correctChoice ?? 0) }); }, []);
+  const deleteQuestion = useCallback((levelPos: number, id?: string) => { if (!id) return; setLevels(current => current.map((lvl, li) => li !== levelPos ? lvl : ({ ...lvl, items: lvl.items.filter(item => item.id !== id) }))); if (questionDraft.editingId === id) setQuestionDraft(blankQuestionDraft()); }, [questionDraft.editingId]);
+  const exportQuestionBank = useCallback(() => { const blob = new Blob([JSON.stringify(levels, null, 2)], { type: "application/json;charset=utf-8" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "abstract-hero-question-bank-v5.json"; a.click(); URL.revokeObjectURL(url); }, [levels]);
+  const importQuestionBank = useCallback(async (file?: File) => { if (!file) return; try { const parsed = JSON.parse(await file.text()) as Level[]; if (!Array.isArray(parsed) || !parsed.length) throw new Error("รูปแบบไม่ถูกต้อง"); const normalized = normalizeLevels(parsed); if (!normalized.some(l => l.items.length)) throw new Error("ไม่พบคำถาม"); setLevels(normalized); setQuestionDraft(blankQuestionDraft()); setGestureLabel(`นำเข้าคลังคำถาม ${normalized.reduce((sum,l)=>sum+l.items.length,0)} ข้อแล้ว`); } catch { setGestureLabel("นำเข้าไม่สำเร็จ · ตรวจไฟล์ JSON อีกครั้ง"); } }, []);
+  const resetQuestionBank = useCallback(() => { setLevels(normalizeLevels(LEVELS)); setQuestionDraft(blankQuestionDraft()); setGestureLabel("คืนค่าคำถามตัวอย่างแล้ว"); }, []);
 
   const winner = mode === "versus" ? (players[0].score === players[1].score ? null : players[0].score > players[1].score ? 0 : 1) : 0;
   const stars = useMemo(() => { const value = soloAccuracy >= 90 ? 3 : soloAccuracy >= 70 ? 2 : 1; return Array.from({ length: 3 }, (_, i) => i < value); }, [soloAccuracy]);
@@ -544,12 +643,12 @@ export default function Home() {
             <small className="privacy-note"><ShieldCheck size={15} /> ภาพกล้องประมวลผลบนอุปกรณ์และไม่ถูกบันทึก</small><div className={`hand-status ${handReady ? "ready" : ""}`}><Hand size={16} /><span>{gestureLabel}</span></div>
           </div>
           <div className="hero-orb" aria-hidden="true"><div className="orb-halo halo-one" /><div className="orb-halo halo-two" /><div className="orb-core"><span>AH</span></div><div className="float-label label-a"><Hand size={16} /> OPEN PALM <small>LOCK / START</small></div><div className="float-label label-b"><ArrowRight size={16} /> SWIPE <small>SMART TRACK</small></div><div className="float-label label-c"><Zap size={16} /> 2 HANDS <small>OWN POWER</small></div></div>
-          <div className="level-ribbon glass-panel">{LEVELS.map(item => <div key={item.id} className="ribbon-item"><span>0{item.id}</span><div><strong>{item.title}</strong><small>{item.subject}</small></div></div>)}</div>
+          <div className="level-ribbon glass-panel">{levels.map(item => <div key={item.id} className="ribbon-item"><span>0{item.id}</span><div><strong>{item.title}</strong><small>{item.subject}</small></div></div>)}</div>
         </div>}
 
         {screen === "game" && card && mode === "solo" && <div className="game-shell">
           <aside className="mission-panel glass-panel"><div className="level-id">LEVEL 0{level.id}</div><p className="eyebrow">{level.eyebrow}</p><h2>{level.title}</h2><p>{level.mission}</p><div className="subject-chip"><span>{level.subjectIcon}</span><div><small>กำลังสร้างนามธรรมของ</small><strong>{level.subject}</strong></div></div><div className="enemy-card"><span>{level.id === 5 ? "🤖" : "👾"}</span><div><small>ตรวจพบศัตรู</small><strong>{level.enemy}</strong></div></div></aside>
-          <section className="play-zone" aria-live="polite"><div className="timer-ring" style={{ "--timer": `${Math.min(100, timeLeft / 16 * 100)}%` } as CSSProperties}><span>{timeLeft}</span><small>วินาที</small></div><div className={`data-card ${soloFeedback ? "answered" : ""}`}><span className="card-scan" /><div className="card-label">DATA OBJECT · {cardIndex + 1}/{deck.length}</div><div className="card-icon">{card.icon}</div><h3>{card.label}</h3><p>ข้อมูลนี้จำเป็นต่อการอธิบาย “{level.subject}” หรือไม่?</p><div className="pinch-cue"><span className="pinch-dot" /> PINCH → FIST หรือ SWIPE</div></div><div className="decision-buttons"><button className="reject-button" onClick={() => classifyForPlayer(0, "noise")} disabled={!!soloFeedback}><ArrowLeft size={24} /><span><small>SWIPE LEFT</small>ไม่สำคัญ</span></button><button className="keep-button" onClick={() => classifyForPlayer(0, "essential")} disabled={!!soloFeedback}><span><small>SWIPE RIGHT</small>เก็บไว้</span><ArrowRight size={24} /></button></div><button className="power-button" onClick={() => activatePower(0)} disabled={players[0].power === 0 || !!soloFeedback}><Zap size={17} fill="currentColor" /> Focus Vision<span>{players[0].power}</span></button></section>
+          <section className="play-zone" aria-live="polite"><div className="timer-ring" style={{ "--timer": `${Math.min(100, timeLeft / 16 * 100)}%` } as CSSProperties}><span>{timeLeft}</span><small>วินาที</small></div><div className={`data-card floating-question-card ${players[0].feedback ? `motion-${players[0].feedback.motion} ${players[0].feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><span className="card-scan" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "DATA OBJECT"} · {cardIndex + 1}/{deck.length}</div><div className="card-icon">{card.icon}</div><h3>{card.label}</h3><p>{questionPrompt(card, level)}</p>{players[0].feedback && <span className={`score-pop ${players[0].feedback.correct ? "good" : "bad"}`}>{players[0].feedback.points > 0 ? "+" : ""}{players[0].feedback.points}</span>}<div className="pinch-cue"><span className="pinch-dot" /> {questionMode(card) === "mcq" ? "SWIPE เลื่อน · PINCH → FIST ยืนยัน" : "PINCH → FIST หรือ SWIPE"}</div></div>{questionMode(card) === "mcq" ? <div className="mcq-grid floating-answers">{(card.choices ?? []).map((choice, i) => <button key={`${choice}-${i}`} className={`mcq-option ${players[0].choiceIndex === i ? "selected" : ""}`} onClick={() => answerMcqForPlayer(0, i)} disabled={!!soloFeedback}><span>{String.fromCharCode(65 + i)}</span><strong>{choice}</strong>{players[0].choiceIndex === i && <em>เลือกอยู่</em>}</button>)}</div> : <div className="decision-buttons floating-answers"><button className="reject-button" onClick={() => classifyForPlayer(0, "noise")} disabled={!!soloFeedback}><ArrowLeft size={24} /><span><small>SWIPE LEFT</small>{card.leftLabel || "ไม่สำคัญ"}</span></button><button className="keep-button" onClick={() => classifyForPlayer(0, "essential")} disabled={!!soloFeedback}><span><small>SWIPE RIGHT</small>{card.rightLabel || "เก็บไว้"}</span><ArrowRight size={24} /></button></div>}<button className="power-button" onClick={() => activatePower(0)} disabled={players[0].power === 0 || !!soloFeedback}><Zap size={17} fill="currentColor" /> Focus Vision<span>{players[0].power}</span></button></section>
           <aside className="hud-panel glass-panel"><div className="hud-score"><small>SCORE</small><strong>{players[0].score.toLocaleString("th-TH")}</strong></div><div className="hud-row"><span>ความแม่นยำ</span><strong>{soloAccuracy}%</strong></div><div className="accuracy-bar"><i style={{ width: `${soloAccuracy}%` }} /></div><div className="hud-row"><span>Combo</span><strong className="combo-text">×{players[0].combo}</strong></div><div className="life-row">{[0, 1, 2].map(life => <span key={life} className={life < players[0].lives ? "alive" : ""}>◆</span>)}</div><button className="pause-button" onClick={() => setPaused(v => !v)}>{paused ? <Play size={17} /> : <Pause size={17} />} {paused ? "เล่นต่อ" : "หยุดชั่วคราว"}</button><div className="gesture-tip"><Hand size={20} /><div><strong>Gesture Engine</strong><small>{gestureLabel}</small></div></div></aside>
           <div className="bottom-progress"><div><span style={{ width: `${progress}%` }} /></div><small>{Math.round(progress)}% ของภารกิจ</small></div>
           {soloFeedback && <div className="feedback-backdrop"><div ref={feedbackRef} className={`feedback-card ${soloFeedback.correct ? "correct" : "wrong"}`}><span className="feedback-icon">{soloFeedback.correct ? <Check size={31} /> : <X size={31} />}</span><p>{soloFeedback.correct ? "+ คะแนนความเข้าใจ" : "เรียนรู้จากข้อผิดพลาด"}</p><h3>{soloFeedback.title}</h3><div className="why-box"><strong>เพราะอะไร?</strong><span>{soloFeedback.body}</span></div><button className="primary-button" onClick={advanceCard}>ไปต่อ <ArrowRight size={19} /></button></div></div>}
@@ -558,7 +657,7 @@ export default function Home() {
         {screen === "game" && card && mode === "versus" && <div className="versus-game-shell">
           <div className="versus-topline"><div><span>LEVEL 0{level.id}</span><strong>{level.title}</strong></div><div className="versus-timer"><small>ROUND TIME</small><strong>{timeLeft}</strong></div><button className="pause-button" onClick={() => setPaused(v => !v)}>{paused ? <Play size={16} /> : <Pause size={16} />}{paused ? "เล่นต่อ" : "พักเกม"}</button></div>
           <div className="versus-lanes">
-            {([0, 1] as PlayerId[]).map(player => { const p = players[player]; const name = player === 0 ? (studentName || "Player 1") : (player2Name || "Player 2"); return <section key={player} className={`versus-lane player-${player + 1} ${p.answered ? "answered" : ""}`}><div className="versus-player-hud"><div><span>P{player + 1}</span><strong>{name}</strong><small>{playerGesture[player]}</small></div><div className="versus-score"><small>SCORE</small><strong>{p.score}</strong><span>COMBO ×{p.combo}</span></div></div><div className="versus-card"><div className="card-label">DATA OBJECT · {cardIndex + 1}/{deck.length}</div><div className="card-icon">{card.icon}</div><h3>{card.label}</h3><p>จำเป็นต่อ “{level.subject}” หรือไม่?</p>{p.feedback ? <div className={`lane-feedback ${p.feedback.correct ? "correct" : "wrong"}`}>{p.feedback.correct ? <Check size={20} /> : <X size={20} />}<strong>{p.feedback.title}</strong></div> : <div className="lane-ready"><Hand size={18} /> ปัดประมาณ 1 ฝ่ามือ</div>}</div><div className="lane-actions"><button onClick={() => classifyForPlayer(player, "noise")} disabled={p.answered}><ArrowLeft size={20} /> ตัดออก</button><button onClick={() => classifyForPlayer(player, "essential")} disabled={p.answered}>เก็บไว้ <ArrowRight size={20} /></button></div><div className="lane-meta"><span>ชีวิต {"◆".repeat(p.lives)}{"◇".repeat(3 - p.lives)}</span><span><Zap size={14} /> Power {p.power}</span></div></section>; })}
+            {([0, 1] as PlayerId[]).map(player => { const p = players[player]; const name = player === 0 ? (studentName || "Player 1") : (player2Name || "Player 2"); return <section key={player} className={`versus-lane player-${player + 1} ${p.answered ? "answered" : ""}`}><div className="versus-player-hud"><div><span>P{player + 1}</span><strong>{name}</strong><small>{playerGesture[player]}</small></div><div className="versus-score"><small>SCORE</small><strong>{p.score}</strong><span>COMBO ×{p.combo}</span></div></div><div className={`versus-card floating-question-card ${p.feedback ? `motion-${p.feedback.motion} ${p.feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "DATA OBJECT"} · {cardIndex + 1}/{deck.length}</div><div className="card-icon">{card.icon}</div><h3>{card.label}</h3><p>{questionPrompt(card, level)}</p>{p.feedback && <span className={`score-pop ${p.feedback.correct ? "good" : "bad"}`}>{p.feedback.points > 0 ? "+" : ""}{p.feedback.points}</span>}{p.feedback ? <div className={`lane-feedback ${p.feedback.correct ? "correct" : "wrong"}`}>{p.feedback.correct ? <Check size={20} /> : <X size={20} />}<strong>{p.feedback.title}</strong></div> : <div className="lane-ready"><Hand size={18} /> {questionMode(card) === "mcq" ? "ปัดเพื่อเลื่อน · จีบ+กำเพื่อยืนยัน" : "ปัดประมาณ 1 ฝ่ามือ"}</div>}</div><div className={`lane-actions floating-lane-actions ${questionMode(card) === "mcq" ? "mcq-lane-actions" : ""}`}>{questionMode(card) === "mcq" ? <>{(card.choices ?? []).map((choice, i) => <button key={`${player}-${i}`} className={p.choiceIndex === i ? "selected" : ""} onClick={() => answerMcqForPlayer(player, i)} disabled={p.answered}><span>{String.fromCharCode(65 + i)}</span>{choice}</button>)}</> : <><button onClick={() => classifyForPlayer(player, "noise")} disabled={p.answered}><ArrowLeft size={20} /> {card.leftLabel || "ตัดออก"}</button><button onClick={() => classifyForPlayer(player, "essential")} disabled={p.answered}>{card.rightLabel || "เก็บไว้"} <ArrowRight size={20} /></button></>}</div><div className="lane-meta"><span>ชีวิต {"◆".repeat(p.lives)}{"◇".repeat(3 - p.lives)}</span><span><Zap size={14} /> Power {p.power}</span></div></section>; })}
           </div>
           <div className="versus-footer"><span>Player 1 ถูกล็อกกับมือของตัวเอง</span><strong>SAFE ZONE · มือข้ามกลางไม่สลับเจ้าของ</strong><span>Player 2 ถูกล็อกกับมือของตัวเอง</span></div>
           <div className="bottom-progress"><div><span style={{ width: `${progress}%` }} /></div><small>{Math.round(progress)}% ของการแข่งขัน</small></div>
@@ -568,7 +667,7 @@ export default function Home() {
 
         {screen === "summary" && <div className="summary-shell"><button className="back-link" onClick={() => setScreen("lobby")}><ChevronLeft size={18} /> หน้าหลัก</button>{mode === "solo" ? <section className="victory-card glass-panel"><div className="trophy-orb"><Trophy size={42} /></div><p className="eyebrow">MISSION COMPLETE</p><h1>โลกข้อมูลกลับมาชัดเจนแล้ว!</h1><p>{studentName || "Abstract Hero"} สามารถแยกแก่นสำคัญออกจากรายละเอียดที่ไม่จำเป็นได้</p><div className="stars">{stars.map((active, index) => <span key={index} className={active ? "active" : ""}>★</span>)}</div><div className="result-grid"><div><small>คะแนนรวม</small><strong>{players[0].score}</strong></div><div><small>ความแม่นยำ</small><strong>{soloAccuracy}%</strong></div><div><small>ตอบถูก</small><strong>{players[0].records.filter(r => r.correct).length}/{players[0].records.length}</strong></div></div><div className="summary-actions"><button className="primary-button" onClick={() => { void startCamera(); beginGame(); }}><RotateCcw size={19} /> เล่นอีกครั้ง</button><button className="secondary-button" onClick={() => window.print()}><GraduationCap size={19} /> พิมพ์ใบประกาศ</button></div></section> : <section className="victory-card versus-summary glass-panel"><div className="trophy-orb"><Swords size={42} /></div><p className="eyebrow">VS MATCH COMPLETE</p><h1>{winner === null ? "เสมอกัน!" : `ผู้ชนะ: ${winner === 0 ? (studentName || "Player 1") : (player2Name || "Player 2")}`}</h1><div className="versus-result-grid">{([0, 1] as PlayerId[]).map(player => { const p = players[player]; const accuracy = p.records.length ? Math.round(p.records.filter(r => r.correct).length / p.records.length * 100) : 0; return <div key={player} className={winner === player ? "winner" : ""}><span>P{player + 1}</span><h3>{player === 0 ? (studentName || "Player 1") : (player2Name || "Player 2")}</h3><strong>{p.score}</strong><small>แม่นยำ {accuracy}% · ถูก {p.records.filter(r => r.correct).length}/{p.records.length}</small></div>; })}</div><div className="summary-actions"><button className="primary-button" onClick={() => { void startCamera(); beginGame(); }}><RotateCcw size={19} /> แข่งอีกครั้ง</button><button className="secondary-button" onClick={() => setScreen("lobby")}><ChevronLeft size={19} /> เปลี่ยนผู้เล่น</button></div></section>}</div>}
 
-        {screen === "teacher" && <div className="teacher-shell"><section className="teacher-dashboard glass-panel"><div className="teacher-heading"><div><p className="eyebrow">TEACHER DASHBOARD</p><h1>ภาพรวมการเรียนรู้</h1><p>รองรับทั้ง Solo และ VS 2 Players</p></div><div className="dashboard-actions"><button className="secondary-button" onClick={exportCsv} disabled={!reports.length}><Download size={18} /> Export CSV</button><button className="primary-button" onClick={openGoogleSheets} disabled={!reports.length}><FileSpreadsheet size={18} /> Google Sheets</button></div></div><div className="metric-grid"><div><Users size={20} /><span><small>ผลการเล่นทั้งหมด</small><strong>{reports.length}</strong></span></div><div><Trophy size={20} /><span><small>คะแนนเฉลี่ย</small><strong>{reports.length ? Math.round(reports.reduce((sum, item) => sum + item.score, 0) / reports.length) : 0}</strong></span></div><div><BarChart3 size={20} /><span><small>ความแม่นยำเฉลี่ย</small><strong>{reports.length ? Math.round(reports.reduce((sum, item) => sum + item.accuracy, 0) / reports.length) : 0}%</strong></span></div><div><Swords size={20} /><span><small>ผลจากโหมด VS</small><strong>{reports.filter(item => item.mode === "versus").length}</strong></span></div></div><div className="report-table-wrap"><table><thead><tr><th>ผู้เรียน</th><th>โหมด</th><th>คะแนน</th><th>ความแม่นยำ</th><th>ตอบถูก</th><th>เวลา</th></tr></thead><tbody>{reports.length ? reports.map(report => <tr key={report.id}><td><strong>{report.name}</strong><small>{report.date}</small></td><td>{report.mode === "versus" ? "VS" : "SOLO"}</td><td>{report.score}</td><td><span className={`accuracy-pill ${report.accuracy >= 80 ? "good" : ""}`}>{report.accuracy}%</span></td><td>{report.correct}/{report.total}</td><td>{Math.floor(report.seconds / 60)}:{String(report.seconds % 60).padStart(2, "0")}</td></tr>) : <tr><td colSpan={6} className="empty-report">ยังไม่มีผลการเล่น</td></tr>}</tbody></table></div></section></div>}
+        {screen === "teacher" && <div className="teacher-shell"><section className="teacher-dashboard glass-panel"><div className="teacher-heading"><div><p className="eyebrow">TEACHER CONTROL CENTER</p><h1>จัดการเกมและคลังคำถาม</h1><p>เพิ่มคำถามเอง · เพิ่มคำตอบเอง · บันทึกอัตโนมัติในเครื่อง</p></div><div className="dashboard-actions"><button className={`secondary-button ${teacherTab === "results" ? "active" : ""}`} onClick={() => setTeacherTab("results")}><BarChart3 size={18} /> ผลการเล่น</button><button className={`primary-button ${teacherTab === "questions" ? "active" : ""}`} onClick={() => setTeacherTab("questions")}><ListChecks size={18} /> คลังคำถาม</button></div></div>{teacherTab === "results" ? <><div className="metric-grid"><div><Users size={20} /><span><small>ผลการเล่นทั้งหมด</small><strong>{reports.length}</strong></span></div><div><Trophy size={20} /><span><small>คะแนนเฉลี่ย</small><strong>{reports.length ? Math.round(reports.reduce((sum, item) => sum + item.score, 0) / reports.length) : 0}</strong></span></div><div><BarChart3 size={20} /><span><small>ความแม่นยำเฉลี่ย</small><strong>{reports.length ? Math.round(reports.reduce((sum, item) => sum + item.accuracy, 0) / reports.length) : 0}%</strong></span></div><div><Swords size={20} /><span><small>ผลจากโหมด VS</small><strong>{reports.filter(item => item.mode === "versus").length}</strong></span></div></div><div className="dashboard-actions teacher-export"><button className="secondary-button" onClick={exportCsv} disabled={!reports.length}><Download size={18} /> Export CSV</button><button className="primary-button" onClick={openGoogleSheets} disabled={!reports.length}><FileSpreadsheet size={18} /> Google Sheets</button></div><div className="report-table-wrap"><table><thead><tr><th>ผู้เรียน</th><th>โหมด</th><th>คะแนน</th><th>ความแม่นยำ</th><th>ตอบถูก</th><th>เวลา</th></tr></thead><tbody>{reports.length ? reports.map(report => <tr key={report.id}><td><strong>{report.name}</strong><small>{report.date}</small></td><td>{report.mode === "versus" ? "VS" : "SOLO"}</td><td>{report.score}</td><td><span className={`accuracy-pill ${report.accuracy >= 80 ? "good" : ""}`}>{report.accuracy}%</span></td><td>{report.correct}/{report.total}</td><td>{Math.floor(report.seconds / 60)}:{String(report.seconds % 60).padStart(2, "0")}</td></tr>) : <tr><td colSpan={6} className="empty-report">ยังไม่มีผลการเล่น</td></tr>}</tbody></table></div></> : <div className="question-builder"><div className="question-builder-toolbar"><div><strong>คลังคำถาม {levels.reduce((sum,l)=>sum+l.items.length,0)} ข้อ</strong><small>รองรับ Classify ด้วย Swipe และ Multiple Choice ที่ปัดเพื่อเลื่อนคำตอบแล้วจีบ→กำเพื่อยืนยัน</small></div><div><button className="secondary-button" onClick={exportQuestionBank}><Download size={17} /> Export JSON</button><button className="secondary-button" onClick={() => importQuestionsRef.current?.click()}><Upload size={17} /> Import JSON</button><input ref={importQuestionsRef} type="file" accept="application/json,.json" hidden onChange={e => { void importQuestionBank(e.target.files?.[0]); e.currentTarget.value = ""; }} /><button className="secondary-button danger-soft" onClick={resetQuestionBank}><RotateCcw size={17} /> คืนค่าตัวอย่าง</button></div></div><div className="question-builder-grid"><form className="question-form" onSubmit={e => { e.preventDefault(); saveQuestionDraft(); }}><div className="form-title"><Plus size={19} /><div><strong>{questionDraft.editingId ? "แก้ไขคำถาม" : "เพิ่มคำถามใหม่"}</strong><small>ข้อมูลจะถูกบันทึกลง Browser อัตโนมัติ</small></div></div><label>ด่าน<select value={questionDraft.levelIndex} onChange={e => setQuestionDraft(d => ({ ...d, levelIndex: Number(e.target.value) }))}>{levels.map((lvl,i)=><option key={lvl.id} value={i}>ด่าน {i+1} · {lvl.title}</option>)}</select></label><label>ประเภทคำถาม<select value={questionDraft.mode} onChange={e => setQuestionDraft(d => ({ ...d, mode: e.target.value as QuestionMode }))}><option value="classify">Swipe 2 คำตอบ</option><option value="mcq">Multiple Choice 2–6 คำตอบ</option></select></label><div className="form-two"><label>ไอคอน<input value={questionDraft.icon} onChange={e => setQuestionDraft(d => ({ ...d, icon: e.target.value }))} /></label><label>ข้อความบนการ์ด<input value={questionDraft.label} onChange={e => setQuestionDraft(d => ({ ...d, label: e.target.value }))} placeholder="เช่น มี 4 ขา" /></label></div><label>คำถาม<input value={questionDraft.prompt} onChange={e => setQuestionDraft(d => ({ ...d, prompt: e.target.value }))} placeholder="ปล่อยว่างให้ระบบสร้างจากหัวข้อด่าน" /></label><label>คำอธิบายหลังตอบ<textarea value={questionDraft.detail} onChange={e => setQuestionDraft(d => ({ ...d, detail: e.target.value }))} placeholder="อธิบายเหตุผลของคำตอบ" /></label>{questionDraft.mode === "classify" ? <div className="classify-editor"><div className="form-two"><label>คำตอบซ้าย<input value={questionDraft.leftLabel} onChange={e => setQuestionDraft(d => ({ ...d, leftLabel: e.target.value }))} /></label><label>คำตอบขวา<input value={questionDraft.rightLabel} onChange={e => setQuestionDraft(d => ({ ...d, rightLabel: e.target.value }))} /></label></div><label className="correct-toggle">คำตอบที่ถูก<select value={questionDraft.essential ? "right" : "left"} onChange={e => setQuestionDraft(d => ({ ...d, essential: e.target.value === "right" }))}><option value="left">ซ้าย · {questionDraft.leftLabel}</option><option value="right">ขวา · {questionDraft.rightLabel}</option></select></label></div> : <div className="choice-editor"><div className="choice-editor-head"><strong>คำตอบหลายตัวเลือก</strong><button type="button" onClick={() => setQuestionDraft(d => d.choices.length >= 6 ? d : ({ ...d, choices: [...d.choices, `คำตอบ ${d.choices.length + 1}`] }))}><Plus size={15} /> เพิ่มคำตอบ</button></div>{questionDraft.choices.map((choice,i)=><div className={`choice-row ${questionDraft.correctChoice === i ? "correct" : ""}`} key={i}><button type="button" className="choice-correct" onClick={() => setQuestionDraft(d => ({ ...d, correctChoice: i }))}>{questionDraft.correctChoice === i ? <Check size={16}/> : String.fromCharCode(65+i)}</button><input value={choice} onChange={e => setQuestionDraft(d => ({ ...d, choices: d.choices.map((v,ci)=>ci===i?e.target.value:v) }))} /><button type="button" className="choice-delete" disabled={questionDraft.choices.length <= 2} onClick={() => setQuestionDraft(d => { const next=d.choices.filter((_,ci)=>ci!==i); return { ...d, choices: next, correctChoice: clamp(d.correctChoice > i ? d.correctChoice - 1 : d.correctChoice,0,next.length-1) }; })}><Trash2 size={15}/></button></div>)}</div>}<div className="question-form-actions"><button type="submit" className="primary-button"><Save size={17} /> {questionDraft.editingId ? "บันทึกการแก้ไข" : "เพิ่มคำถาม"}</button>{questionDraft.editingId && <button type="button" className="secondary-button" onClick={() => setQuestionDraft(blankQuestionDraft())}>ยกเลิก</button>}</div></form><div className="question-bank-list">{levels.map((lvl,li)=><section className="question-level" key={lvl.id}><header><span>0{li+1}</span><div><strong>{lvl.title}</strong><small>{lvl.subject} · {lvl.items.length} ข้อ</small></div></header><div>{lvl.items.length ? lvl.items.map((item,qi)=><article className="question-bank-card" key={item.id || qi}><div className="question-bank-icon">{item.icon}</div><div className="question-bank-copy"><span>{questionMode(item) === "mcq" ? `MCQ · ${item.choices?.length ?? 0} คำตอบ` : "SWIPE · 2 คำตอบ"}</span><strong>{item.label}</strong><p>{questionPrompt(item,lvl)}</p><small>{item.detail}</small></div><div className="question-bank-actions"><button onClick={() => editQuestion(li,item)}>แก้ไข</button><button className="danger" onClick={() => deleteQuestion(li,item.id)}><Trash2 size={15}/></button></div></article>) : <div className="empty-question-level">ยังไม่มีคำถามในด่านนี้</div>}</div></section>)}</div></div></div>}</section></div>}
       </section>
     </main>
   );
