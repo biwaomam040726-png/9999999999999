@@ -12,6 +12,7 @@ import { gsap } from "gsap";
 
 type Screen = "lobby" | "game" | "summary" | "teacher";
 type GameMode = "solo" | "versus";
+type ControlMode = "none" | "hand" | "mouse";
 type PlayerId = 0 | 1;
 type AnswerKind = "essential" | "noise";
 type QuestionMode = "classify" | "mcq";
@@ -78,6 +79,8 @@ type HandTrack = {
   fistSince: number;
   openSince: number;
   raisedSince: number;
+  dwellSince?: number;
+  dwellTarget?: string;
   targetLandmarks: Landmark[] | null;
   renderLandmarks: Landmark[] | null;
 };
@@ -256,7 +259,7 @@ function HologramScene({ burst, onRendererReady }: { burst: number; onRendererRe
 }
 
 export default function Home() {
-  const [screen, setScreen] = useState<Screen>("lobby"); const [mode, setMode] = useState<GameMode>("solo");
+  const [screen, setScreen] = useState<Screen>("lobby"); const [mode, setMode] = useState<GameMode>("solo"); const [controlMode, setControlMode] = useState<ControlMode>("none");
   const [levels, setLevels] = useState<Level[]>(() => {
     try { const saved = localStorage.getItem("abstract-hero-question-bank-v5"); if (saved) { const parsed = JSON.parse(saved) as Level[]; if (Array.isArray(parsed) && parsed.length) return normalizeLevels(parsed); } } catch { /* use defaults */ }
     return normalizeLevels(LEVELS);
@@ -270,13 +273,16 @@ export default function Home() {
   const [players, setPlayers] = useState<[PlayerGame, PlayerGame]>([EMPTY_PLAYER(), EMPTY_PLAYER()]); const playersRef = useRef(players); useEffect(() => { playersRef.current = players; }, [players]);
   const [paused, setPaused] = useState(false); const [soloFeedback, setSoloFeedback] = useState<{ correct: boolean; title: string; body: string } | null>(null); const [burst, setBurst] = useState(0);
   const [cameraOn, setCameraOn] = useState(false); const [cameraMessage, setCameraMessage] = useState("กำลังเตรียมกล้อง…"); const [cameraFps, setCameraFps] = useState(0); const [soundOn, setSoundOn] = useState(true); const [voiceOn, setVoiceOn] = useState(true);
-  const [largeText, setLargeText] = useState(false); const [colorBlind, setColorBlind] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false); const [handGuideOpen, setHandGuideOpen] = useState(true); const [answerFloatSpeed, setAnswerFloatSpeed] = useState<"slow" | "normal" | "fast">("slow"); const [ultraSpaceMode, setUltraSpaceMode] = useState(true);
+  const [largeText, setLargeText] = useState(false); const [colorBlind, setColorBlind] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false); const [touchOnlyMode, setTouchOnlyMode] = useState(false); const [handGuideOpen, setHandGuideOpen] = useState(true); const [answerFloatSpeed, setAnswerFloatSpeed] = useState<"slow" | "normal" | "fast">("slow"); const [ultraSpaceMode, setUltraSpaceMode] = useState(true);
   const [gestureLabel, setGestureLabel] = useState("กำลังเตรียม Hand AI"); const [handReady, setHandReady] = useState(false); const [handSelected, setHandSelected] = useState(false);
+  const [handModelReady, setHandModelReady] = useState(false); const [handSetupStep, setHandSetupStep] = useState<0 | 1 | 2>(0); const [handScanProgress, setHandScanProgress] = useState(0);
+  const handReadyRef = useRef(handReady); useEffect(() => { handReadyRef.current = handReady; }, [handReady]);
+  const handSetupStepRef = useRef(handSetupStep); useEffect(() => { handSetupStepRef.current = handSetupStep; }, [handSetupStep]);
   const [playerReady, setPlayerReady] = useState<[boolean, boolean]>([false, false]); const playerReadyRef = useRef(playerReady); useEffect(() => { playerReadyRef.current = playerReady; }, [playerReady]);
   const [playerGesture, setPlayerGesture] = useState<[string, string]>(["รอมือผู้เล่น 1", "รอมือผู้เล่น 2"]);
   const [xrSupported, setXrSupported] = useState(false); const [xrActive, setXrActive] = useState(false); const [reports, setReports] = useState<StudentReport[]>([]);
 
-  const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const floatingAnswerRef = useRef<HTMLDivElement>(null); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
+  const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const floatingAnswerRef = useRef<HTMLDivElement>(null); const startButtonRef = useRef<HTMLButtonElement>(null); const feedbackNextRef = useRef<HTMLButtonElement>(null); const handScanStartedAtRef = useRef(0); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
   const skeletonRefs = [useRef<HTMLCanvasElement>(null), useRef<HTMLCanvasElement>(null)] as const;
   const xrRendererRef = useRef<THREE.WebGLRenderer | null>(null); const startTimeRef = useRef(0); const actionRef = useRef<GestureAction | null>(null); const playSound = useSound(soundOn); const roundAdvanceRef = useRef<number | null>(null); const floatingAnswerMotionRef = useRef({ x: 24, y: 120, tx: 24, ty: 120, rot: -2, trot: -2, scale: 1.02, tscale: 1.02, phaseX: 0, phaseY: 1.4, phaseDepth: 0.8, phaseRoll: 0.2, bobAmpX: 16, bobAmpY: 10, bobSpeedX: 0.7, bobSpeedY: 0.52, depthAmp: 16, depthSpeed: 0.6, rollAmp: 5.5, rollSpeed: 0.44, glowPhase: 0.6 });
   const playableLevels = useMemo(() => { const ready = levels.filter(item => item.items.length > 0); return ready.length ? ready : normalizeLevels(LEVELS); }, [levels]);
@@ -294,11 +300,19 @@ export default function Home() {
       const cameraTrack = stream.getVideoTracks()[0]; if (cameraTrack && "contentHint" in cameraTrack) cameraTrack.contentHint = "motion";
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       const actualFps = Number(cameraTrack?.getSettings?.().frameRate || 0); setCameraFps(actualFps ? Math.round(actualFps) : 60);
-      setCameraOn(true); setCameraMessage(actualFps ? `Camera AR ${Math.round(actualFps)} FPS · Hand Skeleton พร้อม` : "Camera AR 60 FPS · Hand Skeleton พร้อม"); return true;
+      setCameraOn(true); setHandReady(false); setHandSetupStep(0); setHandScanProgress(0); setCameraMessage(actualFps ? `Camera AR ${Math.round(actualFps)} FPS · กดถัดไปเพื่อตั้งค่ามือ` : "Camera AR พร้อม · กดถัดไปเพื่อตั้งค่ามือ"); return true;
     } catch { setCameraOn(false); setCameraMessage("กล้องถูกปิด — ยังเล่นด้วยปุ่มหรือคีย์บอร์ดได้"); return false; }
   }, []);
+  const beginHandScan = useCallback(() => {
+    if (!cameraOn || !handModelReady) return;
+    handScanStartedAtRef.current = performance.now(); setHandReady(false); setHandSetupStep(1); setHandScanProgress(0); setGestureLabel("ยกฝ่ามือให้เห็นเต็มมือ · กำลังรอสแกน");
+  }, [cameraOn, handModelReady]);
 
-  useEffect(() => { const task = window.setTimeout(() => void startCamera(), 0); return () => { window.clearTimeout(task); stopCamera(); }; }, [startCamera, stopCamera]);
+  useEffect(() => {
+    if (controlMode !== "hand") { stopCamera(); return; }
+    const task = window.setTimeout(() => void startCamera(), 0);
+    return () => { window.clearTimeout(task); stopCamera(); };
+  }, [controlMode, startCamera, stopCamera]);
   useEffect(() => {
     const task = window.setTimeout(() => { try { const saved = localStorage.getItem("abstract-hero-reports"); if (saved) setReports(JSON.parse(saved) as StudentReport[]); } catch { /* optional */ } }, 0);
     const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr; if (xr) void xr.isSessionSupported("immersive-ar").then(setXrSupported).catch(() => setXrSupported(false));
@@ -482,8 +496,9 @@ export default function Home() {
   }, [card, mode, paused, playSound, screen, speak]);
 
   const beginGame = useCallback(() => {
+    if (controlMode === "none") return;
     startTimeRef.current = Date.now(); setLevelIndex(0); setDeck(shuffle(playableLevels[0].items)); setCardIndex(0); setTimeLeft(14); setPlayers([EMPTY_PLAYER(), EMPTY_PLAYER()]); setSoloFeedback(null); setPaused(false); setScreen("game"); playSound("power"); speak(mode === "versus" ? "เริ่มการแข่งขัน ผู้เล่นหนึ่งฝั่งซ้าย ผู้เล่นสองฝั่งขวา ปัดมือเฉพาะการ์ดของตัวเอง" : "ยินดีต้อนรับ Abstract Hero ปัดขวาเพื่อเก็บข้อมูลสำคัญ และปัดซ้ายเพื่อตัดรายละเอียดที่ไม่จำเป็น");
-  }, [mode, playSound, playableLevels, speak]);
+  }, [controlMode, mode, playSound, playableLevels, speak]);
 
   useEffect(() => {
     if (screen !== "game" || paused || (mode === "solo" && soloFeedback)) return;
@@ -504,22 +519,22 @@ export default function Home() {
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
-      if (screen === "lobby" && event.key === "Enter" && (mode === "solo" || playerReadyRef.current.every(Boolean))) beginGame();
+      if (screen === "lobby" && event.key === "Enter" && controlMode !== "none" && (controlMode === "mouse" || (mode === "solo" ? handReady : playerReadyRef.current.every(Boolean)))) beginGame();
       if (screen !== "game") return;
       if (mode === "solo") { if (event.key === "ArrowLeft") handleSwipe(0, "noise"); if (event.key === "ArrowRight") handleSwipe(0, "essential"); if (event.key === "Enter" && card && questionMode(card) === "mcq") confirmCurrentChoice(0); if (event.code === "Space") { event.preventDefault(); activatePower(0); } }
       else { if (event.key.toLowerCase() === "a") handleSwipe(0, "noise"); if (event.key.toLowerCase() === "d") handleSwipe(0, "essential"); if (event.key.toLowerCase() === "w" && card && questionMode(card) === "mcq") confirmCurrentChoice(0); if (event.key === "ArrowLeft") handleSwipe(1, "noise"); if (event.key === "ArrowRight") handleSwipe(1, "essential"); if (event.key === "ArrowUp" && card && questionMode(card) === "mcq") confirmCurrentChoice(1); }
       if (event.key.toLowerCase() === "p") setPaused(value => !value);
     };
     window.addEventListener("keydown", handleKey); return () => window.removeEventListener("keydown", handleKey);
-  }, [activatePower, beginGame, card, confirmCurrentChoice, handleSwipe, mode, screen]);
+  }, [activatePower, beginGame, card, confirmCurrentChoice, controlMode, handleSwipe, handReady, mode, screen]);
 
   useEffect(() => { actionRef.current = { screen, mode, paused, questionMode: card ? questionMode(card) : "classify", soloFeedback, beginGame, swipe: handleSwipe, confirm: confirmCurrentChoice, usePower: activatePower, togglePause: () => setPaused(value => !value) }; }, [activatePower, beginGame, card, confirmCurrentChoice, handleSwipe, mode, paused, screen, soloFeedback]);
 
   // Robust hand tracking + gesture state machine.
   useEffect(() => {
-    if (!cameraOn || !videoRef.current) return;
+    if (controlMode !== "hand" || !cameraOn || !videoRef.current) return;
     let cancelled = false; let animationFrame = 0; let landmarker: { detectForVideo: (video: HTMLVideoElement, now: number) => HandResult; close: () => void } | null = null;
-    let lastVideoTime = -1; let nextTrackId = 1; let lastInferenceAt = 0; let lastLabel = ""; let inferenceInterval = 20;
+    let lastVideoTime = -1; let nextTrackId = 1; let lastInferenceAt = 0; let lastLabel = ""; let inferenceInterval = 20; let lastScanProgress = -1;
     const tracks = new Map<number, HandTrack>();
     const HAND_CONNECTIONS: [number, number][] = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],[5,13]];
     const renderSkeletons = (now: number) => {
@@ -565,8 +580,8 @@ export default function Home() {
         try { landmarker = await vision.HandLandmarker.createFromOptions(wasm, options) as typeof landmarker; }
         catch { landmarker = await vision.HandLandmarker.createFromOptions(wasm, { ...options, baseOptions: { ...options.baseOptions, delegate: "CPU" as const } }) as typeof landmarker; }
         if (cancelled || !landmarker) { landmarker?.close(); return; }
-        setHandReady(true); setLabel(mode === "versus" ? "Hand AI พร้อม · ยกฝ่ามือในฝั่งของตัวเองเพื่อ Lock Player" : "Hand AI พร้อม · แสดงมือหน้ากล้อง");
-      } catch { if (!cancelled) { setHandReady(false); setLabel("Hand AI เปิดไม่สำเร็จ · ยังใช้ปุ่ม/คีย์บอร์ดได้"); } return; }
+        setHandModelReady(true); setHandReady(false); setLabel(mode === "versus" ? "Hand AI โหลดแล้ว · ยกฝ่ามือในฝั่งของตัวเองเพื่อสแกนและ Lock Player" : "กล้องและ Hand AI พร้อม · กดถัดไป แล้วชูฝ่ามือเพื่อสแกน");
+      } catch { if (!cancelled) { setHandModelReady(false); setHandReady(false); setLabel("Hand AI เปิดไม่สำเร็จ · ยังใช้ปุ่ม/คีย์บอร์ดได้"); } return; }
 
       const loop = () => {
         if (cancelled || !landmarker || !videoRef.current) return;
@@ -610,12 +625,21 @@ export default function Home() {
             else { track.pinchOffFrames = pinchRatio > .62 ? track.pinchOffFrames + 1 : 0; if (track.pinchOffFrames >= 2) { track.pinchState = false; track.pinchOnFrames = 0; } }
             track.openSince = open ? (track.openSince || now) : 0; track.fistSince = fist ? (track.fistSince || now) : 0;
 
+            // SOLO hand readiness gate: gestures remain locked until an open palm is scanned steadily.
+            if (mode === "solo" && track.primary && handSetupStepRef.current === 1) {
+              if (open && track.stableFrames >= 7 && track.openSince) {
+                const elapsed = now - Math.max(track.openSince, handScanStartedAtRef.current); const progressValue = Math.min(100, Math.round(elapsed / 9));
+                if (Math.abs(progressValue - lastScanProgress) >= 3) { lastScanProgress = progressValue; setHandScanProgress(progressValue); setLabel(`กำลังสแกนมือ ${progressValue}% · ค้างฝ่ามือให้นิ่ง`); }
+                if (elapsed >= 900) { setHandScanProgress(100); setHandSetupStep(2); setHandReady(true); setLabel("✓ มือพร้อมใช้งาน · ใช้นิ้วชี้เล็งปุ่ม หรือปัดซ้าย/ขวาได้"); track.trail.length = 0; track.armed = false; track.lastActionAt = now; }
+              } else { if (lastScanProgress !== 0) { lastScanProgress = 0; setHandScanProgress(0); } setLabel("ยกฝ่ามือให้เห็นครบ 5 นิ้ว · ระบบจะสแกนประมาณ 1 วินาที"); }
+            }
+
             // VS calibration / re-acquisition. A primary hand is only acquired inside its own home zone with an open palm.
             if (mode === "versus" && track.owner === null) {
               const candidate = ownerZone(track.x);
               if (candidate !== null && open && track.stableFrames >= 8 && primaryByPlayer[candidate] === null) {
                 if (track.candidateOwner !== candidate) { track.candidateOwner = candidate; track.candidateSince = now; }
-                if (now - track.candidateSince >= 620) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
+                if (now - track.candidateSince >= 620) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
               } else { track.candidateOwner = null; track.candidateSince = 0; }
             }
 
@@ -629,17 +653,32 @@ export default function Home() {
 
             if (track.owner === null) return;
             const owner = track.owner; const active = actionRef.current; if (!active) return;
-            const cursor = cursorRefs[owner].current; if (track.primary && cursor) { cursor.style.opacity = "1"; cursor.style.transform = `translate(${track.x * innerWidth}px,${track.y * innerHeight}px)`; }
+            const cursor = cursorRefs[owner].current;
+            const indexTip = track.targetLandmarks?.[8]; const pointerX = indexTip ? (1 - indexTip.x) * innerWidth : (1 - track.x) * innerWidth; const pointerY = indexTip ? indexTip.y * innerHeight : track.y * innerHeight;
+            if (track.primary && cursor) { cursor.style.opacity = "1"; cursor.style.transform = `translate(${pointerX}px,${pointerY}px)`; }
             if (!track.primary) return; // Only the locked primary hand may classify cards.
+
+            // Point-and-dwell: after calibration the index finger can press START and NEXT without a mouse.
+            if ((mode === "solo" && handReadyRef.current) || (mode === "versus" && playerReadyRef.current[owner])) {
+              const target = active.screen === "lobby" ? startButtonRef.current : (active.screen === "game" && active.soloFeedback ? feedbackNextRef.current : null);
+              if (target) {
+                const rect = target.getBoundingClientRect(); const inside = pointerX >= rect.left && pointerX <= rect.right && pointerY >= rect.top && pointerY <= rect.bottom;
+                if (inside) {
+                  target.classList.add("hand-dwell-active"); const targetKey = active.screen === "lobby" ? "start" : "next";
+                  if (track.dwellTarget !== targetKey) { track.dwellTarget = targetKey; track.dwellSince = now; }
+                  if (track.dwellSince && now - track.dwellSince >= 700) { target.classList.remove("hand-dwell-active"); track.dwellSince = 0; track.dwellTarget = ""; target.click(); }
+                } else { target.classList.remove("hand-dwell-active"); track.dwellSince = 0; track.dwellTarget = ""; }
+              }
+            }
+
+            if (mode === "solo" && handSetupStepRef.current !== 2) return;
+            if (mode === "versus" && !playerReadyRef.current[owner]) return;
 
             track.trail.push({ x: track.x, y: track.y, at: now }); while (track.trail.length && now - track.trail[0].at > 680) track.trail.shift();
             const recentNeutral = track.trail.filter(s => now - s.at <= 150); const neutralDx = recentNeutral.length > 1 ? Math.abs(recentNeutral[recentNeutral.length - 1].x - recentNeutral[0].x) : 0;
             if (!track.armed && now - track.lastActionAt > 140 && neutralDx < .05 && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 60) track.armed = true; } else if (neutralDx >= .06) track.neutralSince = 0;
 
-            if (active.screen === "lobby") {
-              if (mode === "solo" && open && track.openSince && now - track.openSince > 650 && now - track.lastActionAt > 1100) { setLabel("Open Palm · START"); active.beginGame(); track.lastActionAt = now; track.openSince = 0; }
-              return;
-            }
+            if (active.screen === "lobby") { return; }
             if (active.screen !== "game" || (mode === "solo" && active.soloFeedback)) return;
 
             // Raise open palm to pause in solo only. VS pause remains a shared explicit control to avoid one player stopping the race.
@@ -672,7 +711,7 @@ export default function Home() {
           ([0, 1] as PlayerId[]).forEach(owner => {
             const pid = primaryByPlayer[owner]; const primary = pid ? tracks.get(pid) : null;
             if (!primary || now - primary.lastSeen > 280) { if (cursorRefs[owner].current) cursorRefs[owner].current!.style.opacity = "0"; }
-            if (primary && now - primary.lastSeen > 1650) { primary.primary = false; primary.owner = null; primaryByPlayer[owner] = null; if (mode === "versus") { setPlayerReady(current => { const next = [...current] as [boolean, boolean]; next[owner] = false; return next; }); setPlayerLabel(owner, "หลุดการติดตาม · ยกฝ่ามือในฝั่งตัวเองเพื่อล็อกใหม่"); } }
+            if (primary && now - primary.lastSeen > 1650) { primary.primary = false; primary.owner = null; primaryByPlayer[owner] = null; if (mode === "versus") { setHandReady(false); setPlayerReady(current => { const next = [...current] as [boolean, boolean]; next[owner] = false; return next; }); setPlayerLabel(owner, "หลุดการติดตาม · ยกฝ่ามือในฝั่งตัวเองเพื่อล็อกใหม่"); } else { handScanStartedAtRef.current = now; setHandReady(false); setHandSetupStep(1); setHandScanProgress(0); setLabel("มือหลุดจากกล้อง · ยกฝ่ามือเพื่อสแกนใหม่"); } }
           });
           [...tracks.values()].forEach(track => { if (now - track.lastSeen > 2200) tracks.delete(track.id); });
 
@@ -693,8 +732,8 @@ export default function Home() {
       loop();
     };
     void boot();
-    return () => { cancelled = true; cancelAnimationFrame(animationFrame); landmarker?.close(); tracks.clear(); skeletonRefs.forEach(ref => { const canvas = ref.current; if (!canvas) return; const ctx = canvas.getContext("2d"); ctx?.clearRect(0,0,canvas.width,canvas.height); canvas.style.opacity = "0"; }); setHandReady(false); };
-  }, [cameraOn, mode]);
+    return () => { cancelled = true; cancelAnimationFrame(animationFrame); landmarker?.close(); tracks.clear(); skeletonRefs.forEach(ref => { const canvas = ref.current; if (!canvas) return; const ctx = canvas.getContext("2d"); ctx?.clearRect(0,0,canvas.width,canvas.height); canvas.style.opacity = "0"; }); setHandModelReady(false); setHandReady(false); };
+  }, [cameraOn, mode, controlMode]);
 
   const startWebXR = useCallback(async () => {
     const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr; const renderer = xrRendererRef.current;
@@ -738,7 +777,7 @@ export default function Home() {
 
         <header className="topbar glass-panel">
           <button className="brand" onClick={() => setScreen("lobby")} aria-label="กลับหน้าหลัก"><span className="brand-mark"><Sparkles size={18} /></span><span><strong>ABSTRACT</strong><small>HERO AR</small></span></button>
-          <div className="top-status" aria-live="polite"><span className={`status-dot ${cameraOn && handReady ? "active" : ""}`} />{handReady ? `HAND AI ACTIVE · ${cameraFps || 60} FPS CAM / 60 FPS RENDER · ${gestureLabel}` : cameraMessage}</div>
+          <div className="top-status" aria-live="polite"><span className={`status-dot ${controlMode === "mouse" || (cameraOn && handReady) ? "active" : ""}`} />{controlMode === "mouse" ? "MOUSE MODE · คลิกคำตอบและปุ่มได้เลย" : controlMode === "none" ? "เลือกวิธีควบคุมก่อนเริ่มเกม" : handReady ? `HAND READY · ${gestureLabel}` : handModelReady ? gestureLabel : cameraMessage}</div>
           <nav className="top-actions" aria-label="เครื่องมือ">
             {screen === "game" && <button className="exit-game-button" onClick={exitGame}><LogOut size={17} /><span>ออกจากเกม</span></button>}
             <button className="teacher-nav-button" onClick={() => setScreen(screen === "teacher" ? "lobby" : "teacher")}><BarChart3 size={17} /><span>สำหรับครู</span></button>
@@ -752,32 +791,43 @@ export default function Home() {
 
         {screen === "lobby" && <div className={`hand-ai-visible-hud ${handReady ? "is-ready" : ""}`} aria-live="polite"><div className="hand-ai-state"><span className="hand-ai-icon">✋</span><span><strong>{handReady ? "HAND AI ACTIVE" : "กำลังเปิด HAND AI"}</strong><small>{gestureLabel}</small></span></div><div className="hand-command-row"><div className="hand-command"><b>👈</b><span>ปัดซ้าย</span><em>ตัดออก</em></div><div className="hand-command"><b>👉</b><span>ปัดขวา</span><em>เก็บไว้</em></div><div className="hand-command"><b>🤏</b><span>จีบนิ้ว</span><em>เลือก</em></div><div className="hand-command"><b>✊</b><span>กำมือ</span><em>เก็บ</em></div><div className="hand-command"><b>✋</b><span>ยกฝ่ามือ</span><em>Pause/Start</em></div><div className="hand-command"><b>🙌</b><span>สองมือ</span><em>Power</em></div></div></div>}
 
-        {screen === "game" && <><button className={`hand-guide-toggle ${handGuideOpen ? "active" : ""}`} onClick={() => setHandGuideOpen(v => !v)} aria-expanded={handGuideOpen} aria-label="เปิดคำอธิบายระบบมือ"><Hand size={18} /><span>วิธีใช้มือ</span><b>?</b></button><aside className={`hand-guide-panel glass-panel ${handGuideOpen ? "open" : ""}`} aria-label="คำอธิบายระบบมือ"><div className="hand-guide-head"><div><span className={`guide-live-dot ${handReady ? "ready" : ""}`} /><strong>HAND CONTROLS</strong><small>{handReady ? `กำลังตรวจจับ: ${gestureLabel}` : cameraMessage}</small></div><button onClick={() => setHandGuideOpen(false)} aria-label="ปิดคำอธิบาย"><X size={17} /></button></div><div className="hand-guide-grid"><div><b>👈</b><span><strong>ปัดซ้าย</strong><small>ตัดข้อมูล / ไม่สำคัญ</small></span></div><div><b>👉</b><span><strong>ปัดขวา</strong><small>เก็บข้อมูล / สำคัญ</small></span></div><div><b>🤏</b><span><strong>จีบนิ้วโป้ง+ชี้</strong><small>เลือกการ์ดหรือคำตอบ</small></span></div><div><b>✊</b><span><strong>กำมือหลังจีบ</strong><small>ยืนยัน / เก็บคำตอบ</small></span></div><div><b>✋</b><span><strong>แบฝ่ามือ</strong><small>เริ่มเกม / หยุดชั่วคราว</small></span></div><div><b>🙌</b><span><strong>ยกสองมือ</strong><small>ใช้ Focus Power</small></span></div></div><div className="hand-guide-note">{mode === "versus" ? <><strong>โหมด 2 คน:</strong> P1 อยู่ฝั่งซ้าย · P2 อยู่ฝั่งขวา · พื้นที่กลางเป็น SAFE ZONE และ Power ต้องเป็นสองมือของผู้เล่นคนเดียวกัน</> : <><strong>เคล็ดลับ:</strong> ให้กล้องเห็นฝ่ามือเต็ม ๆ แล้วปัดแนวนอนต่อเนื่อง ไม่ต้องเหวี่ยงแรง</>}</div></aside></>}
+        {screen === "game" && controlMode === "hand" && <><button className={`hand-guide-toggle ${handGuideOpen ? "active" : ""}`} onClick={() => setHandGuideOpen(v => !v)} aria-expanded={handGuideOpen} aria-label="เปิดคำอธิบายระบบมือ"><Hand size={18} /><span>วิธีใช้มือ</span><b>?</b></button><aside className={`hand-guide-panel glass-panel ${handGuideOpen ? "open" : ""}`} aria-label="คำอธิบายระบบมือ"><div className="hand-guide-head"><div><span className={`guide-live-dot ${handReady ? "ready" : ""}`} /><strong>HAND CONTROLS</strong><small>{handReady ? `กำลังตรวจจับ: ${gestureLabel}` : handModelReady ? gestureLabel : cameraMessage}</small></div><button onClick={() => setHandGuideOpen(false)} aria-label="ปิดคำอธิบาย"><X size={17} /></button></div><div className="hand-guide-grid"><div><b>👈</b><span><strong>ปัดซ้าย</strong><small>ตัดข้อมูล / ไม่สำคัญ</small></span></div><div><b>👉</b><span><strong>ปัดขวา</strong><small>เก็บข้อมูล / สำคัญ</small></span></div><div><b>🤏</b><span><strong>จีบนิ้วโป้ง+ชี้</strong><small>เลือกการ์ดหรือคำตอบ</small></span></div><div><b>✊</b><span><strong>กำมือหลังจีบ</strong><small>ยืนยัน / เก็บคำตอบ</small></span></div><div><b>✋</b><span><strong>แบฝ่ามือ</strong><small>เริ่มเกม / หยุดชั่วคราว</small></span></div><div><b>🙌</b><span><strong>ยกสองมือ</strong><small>ใช้ Focus Power</small></span></div></div><div className="hand-guide-note">{mode === "versus" ? <><strong>โหมด 2 คน:</strong> P1 อยู่ฝั่งซ้าย · P2 อยู่ฝั่งขวา · พื้นที่กลางเป็น SAFE ZONE และ Power ต้องเป็นสองมือของผู้เล่นคนเดียวกัน</> : <><strong>เคล็ดลับ:</strong> ให้กล้องเห็นฝ่ามือเต็ม ๆ แล้วปัดแนวนอนต่อเนื่อง ไม่ต้องเหวี่ยงแรง</>}</div></aside></>}
 
         {screen === "lobby" && <div className="lobby-shell">
           <div className="hero-copy">
             <div className="mission-tag"><span /> ภารกิจฝึก Abstraction</div><h1>มองให้เห็น<br /><em>“แก่นสำคัญ”</em></h1>
             <p>ระบบ Gesture Engine ใหม่จะล็อกมือผู้เล่น ลดการปัดไม่ติด และป้องกันผู้เล่นอีกฝั่งมาควบคุมการ์ดของเรา</p>
             <div className="mode-switch" role="group" aria-label="เลือกโหมดเกม"><button className={mode === "solo" ? "active" : ""} onClick={() => { setMode("solo"); setPlayerReady([false, false]); }}><Gamepad2 size={18} /> SOLO</button><button className={mode === "versus" ? "active" : ""} onClick={() => { setMode("versus"); setPlayerReady([false, false]); }}><Swords size={18} /> VS 2 PLAYERS</button></div>
+            <div className="control-mode-picker glass-panel" aria-label="เลือกวิธีควบคุม">
+              <div className="control-mode-heading"><strong>เลือกวิธีควบคุม</strong><small>เลือกก่อนเริ่มเกม — เปลี่ยนได้ทุกครั้งที่กลับหน้าหลัก</small></div>
+              <div className="control-mode-options">
+                <button className={controlMode === "hand" ? "active hand" : "hand"} onClick={() => { setControlMode("hand"); setTouchOnlyMode(false); setHandReady(false); setHandSetupStep(0); setHandScanProgress(0); setPlayerReady([false, false]); setGestureLabel("กำลังเปิดกล้องและเตรียม Hand AI"); }}><span className="control-mode-icon">✋</span><span><strong>กล้อง + ระบบมือ</strong><small>สแกนมือก่อนเล่น · ปัด / จีบ / กำมือ / นิ้วชี้</small></span></button>
+                <button className={controlMode === "mouse" ? "active mouse" : "mouse"} onClick={() => { setControlMode("mouse"); setTouchOnlyMode(true); setHandReady(false); setHandSetupStep(0); setHandScanProgress(0); setPlayerReady([false, false]); setGestureLabel("MOUSE MODE · คลิกเพื่อเล่น"); stopCamera(); }}><span className="control-mode-icon">🖱️</span><span><strong>เมาส์</strong><small>ไม่ใช้กล้อง · คลิกคำตอบและปุ่มได้ทันที</small></span></button>
+              </div>
+              {controlMode === "none" && <div className="control-mode-required">เลือก “กล้อง + ระบบมือ” หรือ “เมาส์” ก่อนเริ่ม</div>}
+            </div>
             <div className={`player-name-grid ${mode === "versus" ? "two" : ""}`}>
               <div className="name-field"><label htmlFor="student-name">{mode === "versus" ? "ผู้เล่น 1 · ฝั่งซ้าย" : "ชื่อฮีโร่ของคุณ"}</label><input id="student-name" value={studentName} onChange={e => setStudentName(e.target.value)} placeholder={mode === "versus" ? "Player 1" : "เช่น น้องฟ้า"} autoComplete="name" /></div>
               {mode === "versus" && <div className="name-field"><label htmlFor="player-two-name">ผู้เล่น 2 · ฝั่งขวา</label><input id="player-two-name" value={player2Name} onChange={e => setPlayer2Name(e.target.value)} placeholder="Player 2" autoComplete="off" /></div>}
             </div>
-            {mode === "versus" && <div className="calibration-panel glass-panel"><div className="calibration-head"><ShieldCheck size={18} /><strong>Player Lock Calibration</strong><small>แต่ละคนยืนในฝั่งตัวเอง แล้วยกฝ่ามือค้างประมาณ 0.5 วินาที</small></div><div className="calibration-players"><div className={playerReady[0] ? "ready" : ""}><span>P1</span><strong>{playerReady[0] ? "LOCKED" : "ยกฝ่ามือฝั่งซ้าย"}</strong><small>{playerGesture[0]}</small></div><div className={playerReady[1] ? "ready" : ""}><span>P2</span><strong>{playerReady[1] ? "LOCKED" : "ยกฝ่ามือฝั่งขวา"}</strong><small>{playerGesture[1]}</small></div></div><p>พื้นที่กลาง 14% เป็น Safe Zone: มือที่ยังไม่ถูกล็อกจะไม่ถูกยกให้ผู้เล่นคนใด จึงลดการสลับคนเมื่อยืนใกล้กัน</p></div>}
-            <div className="hero-actions"><button className="primary-button" onClick={beginGame} disabled={mode === "versus" && !playerReady.every(Boolean)}><Play size={20} fill="currentColor" /> {mode === "versus" ? "เริ่มการแข่งขัน" : "เริ่มภารกิจ"}</button>{!cameraOn && <button className="secondary-button" onClick={() => void startCamera()}><Camera size={20} /> เปิดกล้อง AR</button>}</div>
-            {mode === "solo" && <div className="hand-ai-calibration-note"><span>✋</span><div><strong>Hand AI เป็นการควบคุมหลัก</strong><small>ยกฝ่ามือให้เห็นเต็มมือ · ค้างประมาณ 0.6 วินาทีเพื่อเริ่มด้วยมือ หรือกดปุ่มเริ่มเป็นโหมดสำรอง</small></div></div>}
-            <small className="privacy-note"><ShieldCheck size={15} /> ภาพกล้องประมวลผลบนอุปกรณ์และไม่ถูกบันทึก</small><div className={`hand-status ${handReady ? "ready" : ""}`}><Hand size={16} /><span>{gestureLabel}</span></div>
+            {mode === "versus" && controlMode === "hand" && <div className="calibration-panel glass-panel"><div className="calibration-head"><ShieldCheck size={18} /><strong>Player Lock Calibration</strong><small>แต่ละคนยืนในฝั่งตัวเอง แล้วยกฝ่ามือค้างประมาณ 0.5 วินาที</small></div><div className="calibration-players"><div className={playerReady[0] ? "ready" : ""}><span>P1</span><strong>{playerReady[0] ? "LOCKED" : "ยกฝ่ามือฝั่งซ้าย"}</strong><small>{playerGesture[0]}</small></div><div className={playerReady[1] ? "ready" : ""}><span>P2</span><strong>{playerReady[1] ? "LOCKED" : "ยกฝ่ามือฝั่งขวา"}</strong><small>{playerGesture[1]}</small></div></div><p>พื้นที่กลาง 14% เป็น Safe Zone: มือที่ยังไม่ถูกล็อกจะไม่ถูกยกให้ผู้เล่นคนใด จึงลดการสลับคนเมื่อยืนใกล้กัน</p></div>}
+            {mode === "versus" && controlMode === "mouse" && <div className="mouse-ready-note glass-panel"><span>🖱️</span><div><strong>VS Mouse Mode พร้อม</strong><small>ผู้เล่น 1 และผู้เล่น 2 คลิกปุ่มคำตอบในฝั่งของตัวเองได้เลย ไม่ต้องสแกนมือ</small></div></div>}
+            {mode === "solo" && controlMode === "hand" && <div className={`hand-setup-card glass-panel step-${handSetupStep}`}><div className="hand-setup-icon">{handSetupStep === 2 ? "✓" : "✋"}</div><div className="hand-setup-copy"><small>HAND SETUP</small><strong>{!cameraOn ? "เปิดกล้องก่อน" : !handModelReady ? "กำลังโหลดระบบมือ…" : handSetupStep === 0 ? "กล้องพร้อม — กดถัดไป" : handSetupStep === 1 ? "ยกฝ่ามือเพื่อสแกน" : "มือพร้อมใช้งานแล้ว"}</strong><span>{handSetupStep === 0 ? "ขั้นต่อไป ระบบจะสแกนรูปมือก่อนเปิดการปัดซ้าย/ขวา" : handSetupStep === 1 ? `ค้างฝ่ามือให้นิ่งประมาณ 1 วินาที · ${handScanProgress}%` : "ใช้นิ้วชี้เล็งปุ่มได้ · ปัดซ้าย/ขวา · จีบ · กำมือ · Power พร้อม"}</span>{handSetupStep === 1 && <div className="hand-scan-bar"><i style={{ width: `${handScanProgress}%` }} /></div>}</div></div>}
+            <div className="hero-actions">{controlMode === "none" ? <button className="primary-button" disabled><Play size={20} /> เลือกวิธีควบคุมก่อน</button> : mode === "solo" && controlMode === "hand" && cameraOn && handModelReady && handSetupStep === 0 ? <button className="primary-button" onClick={beginHandScan}><Hand size={20} /> ถัดไป · สแกนมือ</button> : mode === "solo" && controlMode === "hand" && handSetupStep === 1 ? <button className="primary-button" disabled><Hand size={20} /> กำลังสแกนมือ {handScanProgress}%</button> : <button ref={startButtonRef} className="primary-button hand-start-button" onClick={beginGame} disabled={(controlMode === "hand" && mode === "versus" && !playerReady.every(Boolean)) || (controlMode === "hand" && mode === "solo" && !handReady)}><Play size={20} fill="currentColor" /> {mode === "versus" ? "เริ่มการแข่งขัน" : "เริ่มภารกิจ"}</button>}{controlMode === "hand" && !cameraOn && <button className="secondary-button" onClick={() => void startCamera()}><Camera size={20} /> เปิดกล้อง AR</button>}</div>
+            {mode === "solo" && controlMode === "hand" && <div className="hand-ai-calibration-note"><span>☝️</span><div><strong>หลังสแกน ใช้นิ้วชี้เป็น Pointer ได้</strong><small>ชี้ค้างบนปุ่มประมาณ 0.7 วินาทีเพื่อกด · Gesture จะยังไม่ทำงานจนกว่าจะขึ้น “มือพร้อมใช้งาน”</small></div></div>}
+            {controlMode === "hand" && <><small className="privacy-note"><ShieldCheck size={15} /> ภาพกล้องประมวลผลบนอุปกรณ์และไม่ถูกบันทึก</small><div className={`hand-status ${handReady ? "ready" : ""}`}><Hand size={16} /><span>{gestureLabel}</span></div></>}
+            {controlMode === "mouse" && <div className="mouse-ready-note compact"><span>🖱️</span><div><strong>Mouse Mode พร้อมเล่น</strong><small>คลิก “ไม่สำคัญ / เก็บไว้” หรือคำตอบ Multiple Choice ได้โดยตรง</small></div></div>}
           </div>
           <div className="hero-orb" aria-hidden="true"><div className="orb-halo halo-one" /><div className="orb-halo halo-two" /><div className="orb-core"><span>AH</span></div><div className="float-label label-a"><Hand size={16} /> OPEN PALM <small>LOCK / START</small></div><div className="float-label label-b"><ArrowRight size={16} /> SWIPE <small>SMART TRACK</small></div><div className="float-label label-c"><Zap size={16} /> 2 HANDS <small>OWN POWER</small></div></div>
           <div className="level-ribbon glass-panel">{levels.map(item => <div key={item.id} className="ribbon-item"><span>0{item.id}</span><div><strong>{item.title}</strong><small>{item.subject}</small></div></div>)}</div>
         </div>}
 
-        {screen === "game" && card && mode === "solo" && <div className="game-shell">
+        {screen === "game" && card && mode === "solo" && <div className="game-shell">{controlMode === "hand" && !handReady && <div className="hand-reconnect-overlay"><div className="hand-reconnect-card glass-panel"><span>✋</span><strong>{handSetupStep === 1 ? "กำลังสแกนมือ…" : "ระบบมือยังไม่พร้อม"}</strong><p>ยกฝ่ามือให้กล้องเห็นครบ 5 นิ้ว แล้วค้างประมาณ 1 วินาที</p><div className="hand-scan-bar"><i style={{ width: `${handScanProgress}%` }} /></div><small>{handScanProgress}%</small></div></div>}
           <aside className="mission-panel glass-panel"><div className="level-id">LEVEL 0{level.id}</div><p className="eyebrow">{level.eyebrow}</p><h2>{level.title}</h2><p>{level.mission}</p><div className="subject-chip"><span>{level.subjectIcon}</span><div><small>กำลังสร้างนามธรรมของ</small><strong>{level.subject}</strong></div></div><div className="enemy-card"><span>{level.id === 5 ? "🤖" : "👾"}</span><div><small>ตรวจพบศัตรู</small><strong>{level.enemy}</strong></div></div></aside>
           <section className="play-zone" aria-live="polite"><div className="timer-ring" style={{ "--timer": `${Math.min(100, timeLeft / 16 * 100)}%` } as CSSProperties}><span>{timeLeft}</span><small>วินาที</small></div>{questionMode(card) !== "mcq" && <div ref={floatingAnswerRef} className={`floating-answer-box ${ultraSpaceMode ? "ultra-space" : ""} ${players[0].feedback ? "answer-fast" : ""}`}><span className="answer-orbit orbit-a" /><span className="answer-orbit orbit-b" /><div className="floating-answer-icon">{card.icon}</div><div className="floating-answer-copy"><small>คำตอบ</small><strong>{card.label}</strong></div></div>}<div className={`data-card floating-question-card ${questionMode(card) !== "mcq" ? "question-only-card" : ""} ${players[0].feedback ? `motion-${players[0].feedback.motion} ${players[0].feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><span className="card-scan" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "QUESTION"} · {cardIndex + 1}/{deck.length}</div>{questionMode(card) === "mcq" ? <div className="card-icon">{card.icon}</div> : <span className="question-title">คำถาม</span>}{questionMode(card) === "mcq" && <h3>{card.label}</h3>}<p className={questionMode(card) !== "mcq" ? "question-prompt-only" : undefined}>{questionPrompt(card, level)}</p>{players[0].feedback && <span className={`score-pop ${players[0].feedback.correct ? "good" : "bad"}`}>{players[0].feedback.points > 0 ? "+" : ""}{players[0].feedback.points}</span>}</div>{questionMode(card) === "mcq" ? <div className="mcq-grid floating-answers">{(card.choices ?? []).map((choice, i) => <button key={`${choice}-${i}`} className={`mcq-option ${players[0].choiceIndex === i ? "selected" : ""}`} onClick={() => answerMcqForPlayer(0, i)} disabled={!!soloFeedback}><span>{String.fromCharCode(65 + i)}</span><strong>{choice}</strong>{players[0].choiceIndex === i && <em>เลือกอยู่</em>}</button>)}</div> : <div className="decision-buttons floating-answers"><button className="reject-button" onClick={() => classifyForPlayer(0, "noise")} disabled={!!soloFeedback}><ArrowLeft size={24} /><span>{card.leftLabel || "ไม่สำคัญ"}</span></button><button className="keep-button" onClick={() => classifyForPlayer(0, "essential")} disabled={!!soloFeedback}><span>{card.rightLabel || "เก็บไว้"}</span><ArrowRight size={24} /></button></div>}<button className="power-button" onClick={() => activatePower(0)} disabled={players[0].power === 0 || !!soloFeedback}><Zap size={17} fill="currentColor" /> Focus Vision<span>{players[0].power}</span></button></section>
           <aside className="hud-panel glass-panel"><div className="hud-score"><small>SCORE</small><strong>{players[0].score.toLocaleString("th-TH")}</strong></div><div className="hud-row"><span>ความแม่นยำ</span><strong>{soloAccuracy}%</strong></div><div className="accuracy-bar"><i style={{ width: `${soloAccuracy}%` }} /></div><div className="hud-row"><span>Combo</span><strong className="combo-text">×{players[0].combo}</strong></div><div className="life-row">{[0, 1, 2].map(life => <span key={life} className={life < players[0].lives ? "alive" : ""}>◆</span>)}</div><button className="pause-button" onClick={() => setPaused(v => !v)}>{paused ? <Play size={17} /> : <Pause size={17} />} {paused ? "เล่นต่อ" : "หยุดชั่วคราว"}</button><div className="gesture-tip"><Hand size={20} /><div><strong>Gesture Engine</strong><small>{gestureLabel}</small></div></div></aside>
           <div className="bottom-progress"><div><span style={{ width: `${progress}%` }} /></div><small>{Math.round(progress)}% ของภารกิจ</small></div>
-          {soloFeedback && <div className="feedback-backdrop"><div ref={feedbackRef} className={`feedback-card ${soloFeedback.correct ? "correct" : "wrong"}`}><span className="feedback-icon">{soloFeedback.correct ? <Check size={31} /> : <X size={31} />}</span><p>{soloFeedback.correct ? "+ คะแนนความเข้าใจ" : "เรียนรู้จากข้อผิดพลาด"}</p><h3>{soloFeedback.title}</h3><div className="why-box"><strong>เพราะอะไร?</strong><span>{soloFeedback.body}</span></div><button className="primary-button" onClick={advanceCard}>ไปต่อ <ArrowRight size={19} /></button></div></div>}
+          {soloFeedback && <div className="feedback-backdrop"><div ref={feedbackRef} className={`feedback-card ${soloFeedback.correct ? "correct" : "wrong"}`}><span className="feedback-icon">{soloFeedback.correct ? <Check size={31} /> : <X size={31} />}</span><p>{soloFeedback.correct ? "+ คะแนนความเข้าใจ" : "เรียนรู้จากข้อผิดพลาด"}</p><h3>{soloFeedback.title}</h3><div className="why-box"><strong>เพราะอะไร?</strong><span>{soloFeedback.body}</span></div><button ref={feedbackNextRef} className="primary-button hand-next-button" onClick={advanceCard}>ไปต่อ <ArrowRight size={19} /></button></div></div>}
         </div>}
 
         {screen === "game" && card && mode === "versus" && <div className="versus-game-shell">
