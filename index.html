@@ -323,6 +323,38 @@ body.hand-game-active .hand-ai-visible-hud{bottom:14px}
 .player-2 .versus-answer-float.ultra-space:after{border-color:rgba(190,139,255,.14)}
 @media(max-width:1100px){.versus-question-only{width:min(100%,300px)!important;min-height:185px!important;margin-top:122px}.versus-answer-float{width:205px;top:70px}.player-answer-1{left:8px}.player-answer-2{right:8px}}
 @media(max-width:760px){.versus-answer-float{position:relative;top:auto!important;left:auto!important;right:auto!important;width:min(86vw,280px);margin:8px auto 4px;animation:none!important}.versus-question-only{margin-top:6px!important}}
+
+/* V20: make VS layout fill the screen in two large halves */
+.versus-game-shell{padding:82px 10px 18px!important;grid-template-rows:auto 1fr auto auto!important;gap:10px!important}
+.versus-topline,.versus-footer,.versus-game-shell>.bottom-progress{max-width:none!important;width:calc(100vw - 20px)!important}
+.versus-topline{padding:12px 16px!important;border-radius:18px!important}
+.versus-lanes{max-width:none!important;width:calc(100vw - 20px)!important;flex:1 1 auto!important;min-height:0!important;display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:14px!important;align-items:stretch!important}
+.versus-lane{position:relative!important;min-height:calc(100dvh - 196px)!important;height:100%!important;grid-template-rows:auto auto 1fr auto auto!important;align-content:stretch!important;gap:12px!important;padding:16px 14px!important;border-radius:26px!important}
+.versus-card{min-height:0!important;height:100%!important;border-radius:22px!important;padding:26px 22px 20px!important}
+.versus-card .card-label{top:15px!important;left:18px!important}
+.versus-question-only .versus-question-prompt{max-width:360px!important;font-size:clamp(1rem,1.18vw,1.12rem)!important;line-height:1.72!important}
+.versus-answer-float{top:78px!important;width:min(42%,320px)!important;min-height:98px!important}
+.player-answer-1{left:18px!important}
+.player-answer-2{right:18px!important}
+.lane-actions{margin-top:auto!important;grid-template-columns:1fr 1fr!important;gap:10px!important}
+.lane-actions button{min-height:58px!important;font-size:1rem!important;border-radius:16px!important}
+.lane-meta{padding:0 4px 2px!important;font-size:.78rem!important}
+.player-zone-overlay{grid-template-columns:49% 2% 49%!important;opacity:.42!important}
+.zone-left,.zone-right{box-shadow:none!important}
+.zone-dead{border-left:1px dashed rgba(255,255,255,.06)!important;border-right:1px dashed rgba(255,255,255,.06)!important}
+@media (max-width: 1100px){
+  .versus-game-shell{padding:76px 10px 18px!important}
+  .versus-topline,.versus-footer,.versus-game-shell>.bottom-progress,.versus-lanes{width:calc(100vw - 16px)!important}
+  .versus-lanes{gap:10px!important}
+  .versus-lane{min-height:calc(100dvh - 184px)!important;padding:12px 10px!important}
+  .versus-card{padding:22px 14px 16px!important}
+  .versus-answer-float{width:min(46%,260px)!important;top:70px!important}
+}
+@media (max-width: 900px){
+  .versus-game-shell{padding:76px 8px 22px!important}
+  .versus-topline,.versus-footer,.versus-game-shell>.bottom-progress,.versus-lanes{width:calc(100vw - 12px)!important}
+}
+
 </style>
 <script type="importmap">
 {"imports":{"react":"https://esm.sh/react@19.0.0","react/jsx-runtime":"https://esm.sh/react@19.0.0/jsx-runtime","react-dom/client":"https://esm.sh/react-dom@19.0.0/client?external=react","lucide-react":"https://esm.sh/lucide-react?external=react","three":"https://esm.sh/three","gsap":"https://esm.sh/gsap","@mediapipe/tasks-vision":"https://esm.sh/@mediapipe/tasks-vision@latest"}}
