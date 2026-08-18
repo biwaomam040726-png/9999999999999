@@ -515,7 +515,7 @@ export default function Home() {
 
         <header className="topbar glass-panel">
           <button className="brand" onClick={() => setScreen("lobby")} aria-label="กลับหน้าหลัก"><span className="brand-mark"><Sparkles size={18} /></span><span><strong>ABSTRACT</strong><small>HERO AR</small></span></button>
-          <div className="top-status" aria-live="polite"><span className={`status-dot ${cameraOn && handReady ? "active" : ""}`} />{cameraMessage}</div>
+          <div className="top-status" aria-live="polite"><span className={`status-dot ${cameraOn && handReady ? "active" : ""}`} />{handReady ? `HAND AI ACTIVE · ${gestureLabel}` : cameraMessage}</div>
           <nav className="top-actions" aria-label="เครื่องมือ">
             {screen === "game" && <button className="exit-game-button" onClick={exitGame}><LogOut size={17} /><span>ออกจากเกม</span></button>}
             <button className="teacher-nav-button" onClick={() => setScreen(screen === "teacher" ? "lobby" : "teacher")}><BarChart3 size={17} /><span>สำหรับครู</span></button>
@@ -526,6 +526,8 @@ export default function Home() {
         </header>
 
         {settingsOpen && <aside className="settings-panel glass-panel" aria-label="ตั้งค่าการเข้าถึง"><div className="panel-heading"><Accessibility size={18} /><strong>การเข้าถึง</strong></div><label><span>ตัวอักษรขนาดใหญ่</span><input type="checkbox" checked={largeText} onChange={e => setLargeText(e.target.checked)} /></label><label><span>โหมดแยกสี</span><input type="checkbox" checked={colorBlind} onChange={e => setColorBlind(e.target.checked)} /></label><label><span>เสียงบรรยายไทย</span><input type="checkbox" checked={voiceOn} onChange={e => setVoiceOn(e.target.checked)} /></label></aside>}
+
+        {screen !== "teacher" && <div className={`hand-ai-visible-hud ${handReady ? "is-ready" : ""}`} aria-live="polite"><div className="hand-ai-state"><span className="hand-ai-icon">✋</span><span><strong>{handReady ? "HAND AI ACTIVE" : "กำลังเปิด HAND AI"}</strong><small>{gestureLabel}</small></span></div><div className="hand-command-row"><div className="hand-command"><b>👈</b><span>ปัดซ้าย</span><em>ตัดออก</em></div><div className="hand-command"><b>👉</b><span>ปัดขวา</span><em>เก็บไว้</em></div><div className="hand-command"><b>🤏</b><span>จีบนิ้ว</span><em>เลือก</em></div><div className="hand-command"><b>✊</b><span>กำมือ</span><em>เก็บ</em></div><div className="hand-command"><b>✋</b><span>ยกฝ่ามือ</span><em>Pause/Start</em></div><div className="hand-command"><b>🙌</b><span>สองมือ</span><em>Power</em></div></div></div>}
 
         {screen === "lobby" && <div className="lobby-shell">
           <div className="hero-copy">
@@ -538,6 +540,7 @@ export default function Home() {
             </div>
             {mode === "versus" && <div className="calibration-panel glass-panel"><div className="calibration-head"><ShieldCheck size={18} /><strong>Player Lock Calibration</strong><small>แต่ละคนยืนในฝั่งตัวเอง แล้วยกฝ่ามือค้างประมาณ 0.5 วินาที</small></div><div className="calibration-players"><div className={playerReady[0] ? "ready" : ""}><span>P1</span><strong>{playerReady[0] ? "LOCKED" : "ยกฝ่ามือฝั่งซ้าย"}</strong><small>{playerGesture[0]}</small></div><div className={playerReady[1] ? "ready" : ""}><span>P2</span><strong>{playerReady[1] ? "LOCKED" : "ยกฝ่ามือฝั่งขวา"}</strong><small>{playerGesture[1]}</small></div></div><p>พื้นที่กลาง 14% เป็น Safe Zone: มือที่ยังไม่ถูกล็อกจะไม่ถูกยกให้ผู้เล่นคนใด จึงลดการสลับคนเมื่อยืนใกล้กัน</p></div>}
             <div className="hero-actions"><button className="primary-button" onClick={beginGame} disabled={mode === "versus" && !playerReady.every(Boolean)}><Play size={20} fill="currentColor" /> {mode === "versus" ? "เริ่มการแข่งขัน" : "เริ่มภารกิจ"}</button>{!cameraOn && <button className="secondary-button" onClick={() => void startCamera()}><Camera size={20} /> เปิดกล้อง AR</button>}</div>
+            {mode === "solo" && <div className="hand-ai-calibration-note"><span>✋</span><div><strong>Hand AI เป็นการควบคุมหลัก</strong><small>ยกฝ่ามือให้เห็นเต็มมือ · ค้างประมาณ 0.6 วินาทีเพื่อเริ่มด้วยมือ หรือกดปุ่มเริ่มเป็นโหมดสำรอง</small></div></div>}
             <small className="privacy-note"><ShieldCheck size={15} /> ภาพกล้องประมวลผลบนอุปกรณ์และไม่ถูกบันทึก</small><div className={`hand-status ${handReady ? "ready" : ""}`}><Hand size={16} /><span>{gestureLabel}</span></div>
           </div>
           <div className="hero-orb" aria-hidden="true"><div className="orb-halo halo-one" /><div className="orb-halo halo-two" /><div className="orb-core"><span>AH</span></div><div className="float-label label-a"><Hand size={16} /> OPEN PALM <small>LOCK / START</small></div><div className="float-label label-b"><ArrowRight size={16} /> SWIPE <small>SMART TRACK</small></div><div className="float-label label-c"><Zap size={16} /> 2 HANDS <small>OWN POWER</small></div></div>
