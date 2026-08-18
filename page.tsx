@@ -702,7 +702,9 @@ export default function Home() {
               track.raisedSince = track.raisedSince || now;
               if (now - track.raisedSince > 500 && now - track.lastActionAt > 700) { setLabel("Raise Palm · PAUSE"); active.togglePause(); track.lastActionAt = now; track.raisedSince = 0; track.armed = false; }
             } else track.raisedSince = 0;
-            if (active.paused || playersRef.current[owner].answered || !canActAtX(owner, track.x)) return;
+            // Once a VS hand is LOCKED to a player, ownership is authoritative. Do not block gestures by current X position;
+            // this lets a player complete a swipe naturally even when the hand approaches/crosses the center line.
+            if (active.paused || playersRef.current[owner].answered || (mode === "solo" && !canActAtX(owner, track.rawX))) return;
 
             // Pinch -> select. Fist after pinch -> keep. Both use time hysteresis, not one-frame poses.
             if (track.pinchState) { track.selectedLatch = true; setHandSelected(true); setPlayerLabel(owner, "PINCH · เลือกการ์ด"); if (mode === "solo") setLabel("Pinch · เลือกการ์ด"); }
@@ -710,26 +712,53 @@ export default function Home() {
               setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.confirm(owner); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
             }
 
-            // VS uses an anchor-based swipe detector. It is independent per locked player and does not rely on trail extrema.
+            // VS V23: simple locked-hand displacement detector.
+            // After calibration, a player's track owns its gestures. We only measure horizontal displacement from an anchor:
+            // tiny jitter is ignored, natural diagonal movement is tolerated, and there is no velocity/monotonicity gate.
             if (mode === "versus") {
               const resetVsSwipe = (x = gestureX, y = track.rawY) => { track.swipeAnchorX = x; track.swipeAnchorY = y; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; };
-              if (!track.armed || fist || now - track.lastActionAt < 320) { resetVsSwipe(); return; }
+              if (!track.armed || fist || now - track.lastActionAt < 280) { resetVsSwipe(); return; }
               if (track.swipeAnchorX === undefined || track.swipeAnchorY === undefined || !track.swipeAnchorAt) resetVsSwipe();
               const anchorX = track.swipeAnchorX ?? gestureX; const anchorY = track.swipeAnchorY ?? track.rawY; const anchorAt = track.swipeAnchorAt ?? now;
               const dx = gestureX - anchorX; const dy = track.rawY - anchorY; const absDx = Math.abs(dx); const absDy = Math.abs(dy); const elapsedMs = now - anchorAt;
-              const threshold = clamp(track.palmWidth * .72, .068, .118); const startThreshold = Math.min(.022, threshold * .25);
+              // About half to three-quarters of a visible palm. Easier than V22, but still far above camera jitter.
+              const threshold = clamp(track.palmWidth * .50, .050, .085);
+              const startThreshold = .014;
+
               if (!track.swipeDirection) {
-                if (absDx < startThreshold) { if (elapsedMs > 650) resetVsSwipe(); return; }
-                if (absDx <= absDy * .55) { if (absDy > .06 || elapsedMs > 520) resetVsSwipe(); return; }
-                track.swipeDirection = dx > 0 ? 1 : -1; track.swipeProgressBucket = 0;
+                if (absDx < startThreshold) { if (elapsedMs > 1100) resetVsSwipe(); return; }
+                track.swipeDirection = dx > 0 ? 1 : -1;
+                track.swipeProgressBucket = 0;
+                setPlayerLabel(owner, `${track.swipeDirection > 0 ? "→" : "←"} เริ่มปัด`);
               }
-              const direction = track.swipeDirection || (dx > 0 ? 1 : -1); const signedDx = dx * direction; const elapsed = Math.max(.05, elapsedMs / 1000); const averageVelocity = signedDx / elapsed;
-              if (signedDx < -.018 || absDy > .14 || elapsedMs > 1650) { resetVsSwipe(); return; }
-              const progress = clamp(signedDx / threshold, 0, 1); const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
-              if (bucket > (track.swipeProgressBucket ?? 0)) { track.swipeProgressBucket = bucket; setPlayerLabel(owner, `${direction > 0 ? "→" : "←"} กำลังปัด ${bucket}%`); }
-              if (signedDx >= threshold && absDx > absDy * .52 && elapsedMs >= 80 && averageVelocity >= .045) {
-                const kind: AnswerKind = direction > 0 ? "essential" : "noise"; const label = active.questionMode === "mcq" ? (direction > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า") : (direction > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
-                setPlayerLabel(owner, label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; resetVsSwipe(); setHandSelected(false); return;
+
+              const direction = track.swipeDirection || (dx > 0 ? 1 : -1);
+              const signedDx = dx * direction;
+              // Reset only on a real reversal, very large vertical travel, or a long abandoned gesture.
+              if (signedDx < -.035 || absDy > .28 || elapsedMs > 2300) { resetVsSwipe(); return; }
+
+              const progress = clamp(signedDx / threshold, 0, 1);
+              const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
+              if (bucket > (track.swipeProgressBucket ?? 0)) {
+                track.swipeProgressBucket = bucket;
+                setPlayerLabel(owner, `${direction > 0 ? "→" : "←"} กำลังปัด ${bucket}%`);
+              }
+
+              if (signedDx >= threshold) {
+                const kind: AnswerKind = direction > 0 ? "essential" : "noise";
+                const label = active.questionMode === "mcq"
+                  ? (direction > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า")
+                  : (direction > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
+                setPlayerLabel(owner, label);
+                active.swipe(owner, kind);
+                track.lastActionAt = now;
+                track.armed = false;
+                track.neutralSince = 0;
+                track.trail.length = 0;
+                track.selectedLatch = false;
+                resetVsSwipe();
+                setHandSelected(false);
+                return;
               }
               return;
             }
@@ -873,7 +902,7 @@ export default function Home() {
         {screen === "game" && card && mode === "versus" && <div className="versus-game-shell">
           <div className="versus-topline"><div><span>LEVEL 0{level.id}</span><strong>{level.title}</strong></div><div className="versus-timer"><small>ROUND TIME</small><strong>{timeLeft}</strong></div><button className="pause-button" onClick={() => setPaused(v => !v)}>{paused ? <Play size={16} /> : <Pause size={16} />}{paused ? "เล่นต่อ" : "พักเกม"}</button></div>
           <div className="versus-lanes">
-            {([0, 1] as PlayerId[]).map(player => { const p = players[player]; const name = player === 0 ? (studentName || "Player 1") : (player2Name || "Player 2"); return <section key={player} className={`versus-lane player-${player + 1} ${p.answered ? "answered" : ""}`}><div className="versus-player-hud"><div><span>P{player + 1}</span><strong>{name}</strong><small>{playerGesture[player]}</small></div><div className="versus-score"><small>SCORE</small><strong>{p.score}</strong><span>COMBO ×{p.combo}</span></div></div>{questionMode(card) !== "mcq" && <div className={`versus-answer-float ${ultraSpaceMode ? "ultra-space" : ""} player-answer-${player + 1}`}><span className="answer-orbit orbit-a" /><span className="answer-orbit orbit-b" /><div className="versus-answer-icon">{card.icon}</div><div><small>คำตอบ</small><strong>{card.label}</strong></div></div>}<div className={`versus-card floating-question-card ${questionMode(card) !== "mcq" ? "versus-question-only" : ""} ${p.feedback ? `motion-${p.feedback.motion} ${p.feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "QUESTION"} · {cardIndex + 1}/{deck.length}</div>{questionMode(card) === "mcq" && <div className="card-icon">{card.icon}</div>}{questionMode(card) === "mcq" && <h3>{card.label}</h3>}<p className={questionMode(card) !== "mcq" ? "versus-question-prompt" : undefined}>{questionPrompt(card, level)}</p>{p.feedback && <span className={`score-pop ${p.feedback.correct ? "good" : "bad"}`}>{p.feedback.points > 0 ? "+" : ""}{p.feedback.points}</span>}{p.feedback ? <div className={`lane-feedback ${p.feedback.correct ? "correct" : "wrong"}`}>{p.feedback.correct ? <Check size={20} /> : <X size={20} />}<strong>{p.feedback.title}</strong></div> : <div className="lane-ready"><Hand size={18} /> {questionMode(card) === "mcq" ? "ปัดเพื่อเลื่อน · จีบ+กำเพื่อยืนยัน" : "ปัดซ้าย/ขวาประมาณ 1 ฝ่ามือ"}</div>}</div><div className={`lane-actions floating-lane-actions ${questionMode(card) === "mcq" ? "mcq-lane-actions" : ""}`}>{questionMode(card) === "mcq" ? <>{(card.choices ?? []).map((choice, i) => <button key={`${player}-${i}`} className={p.choiceIndex === i ? "selected" : ""} onClick={() => answerMcqForPlayer(player, i)} disabled={p.answered}><span>{String.fromCharCode(65 + i)}</span>{choice}</button>)}</> : <><button onClick={() => classifyForPlayer(player, "noise")} disabled={p.answered}><ArrowLeft size={20} /> {card.leftLabel || "ไม่สำคัญ"}</button><button onClick={() => classifyForPlayer(player, "essential")} disabled={p.answered}>{card.rightLabel || "เก็บไว้"} <ArrowRight size={20} /></button></>}</div><div className="lane-meta"><span>ชีวิต {"◆".repeat(p.lives)}{"◇".repeat(3 - p.lives)}</span><span><Zap size={14} /> Power {p.power}</span></div></section>; })}
+            {([0, 1] as PlayerId[]).map(player => { const p = players[player]; const name = player === 0 ? (studentName || "Player 1") : (player2Name || "Player 2"); return <section key={player} className={`versus-lane player-${player + 1} ${p.answered ? "answered" : ""}`}><div className="versus-player-hud"><div><span>P{player + 1}</span><strong>{name}</strong><small>{playerGesture[player]}</small></div><div className="versus-score"><small>SCORE</small><strong>{p.score}</strong><span>COMBO ×{p.combo}</span></div></div>{questionMode(card) !== "mcq" && <div className={`versus-answer-float ${ultraSpaceMode ? "ultra-space" : ""} player-answer-${player + 1}`}><span className="answer-orbit orbit-a" /><span className="answer-orbit orbit-b" /><div className="versus-answer-icon">{card.icon}</div><div><small>คำตอบ</small><strong>{card.label}</strong></div></div>}<div className={`versus-card floating-question-card ${questionMode(card) !== "mcq" ? "versus-question-only" : ""} ${p.feedback ? `motion-${p.feedback.motion} ${p.feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "QUESTION"} · {cardIndex + 1}/{deck.length}</div>{questionMode(card) === "mcq" && <div className="card-icon">{card.icon}</div>}{questionMode(card) === "mcq" && <h3>{card.label}</h3>}<p className={questionMode(card) !== "mcq" ? "versus-question-prompt" : undefined}>{questionPrompt(card, level)}</p>{p.feedback && <span className={`score-pop ${p.feedback.correct ? "good" : "bad"}`}>{p.feedback.points > 0 ? "+" : ""}{p.feedback.points}</span>}{p.feedback ? <div className={`lane-feedback ${p.feedback.correct ? "correct" : "wrong"}`}>{p.feedback.correct ? <Check size={20} /> : <X size={20} />}<strong>{p.feedback.title}</strong></div> : <div className="lane-ready"><Hand size={18} /> {questionMode(card) === "mcq" ? "ปัดเพื่อเลื่อน · จีบ+กำเพื่อยืนยัน" : "ปัดซ้าย/ขวาประมาณครึ่งฝ่ามือ"}</div>}</div><div className={`lane-actions floating-lane-actions ${questionMode(card) === "mcq" ? "mcq-lane-actions" : ""}`}>{questionMode(card) === "mcq" ? <>{(card.choices ?? []).map((choice, i) => <button key={`${player}-${i}`} className={p.choiceIndex === i ? "selected" : ""} onClick={() => answerMcqForPlayer(player, i)} disabled={p.answered}><span>{String.fromCharCode(65 + i)}</span>{choice}</button>)}</> : <><button onClick={() => classifyForPlayer(player, "noise")} disabled={p.answered}><ArrowLeft size={20} /> {card.leftLabel || "ไม่สำคัญ"}</button><button onClick={() => classifyForPlayer(player, "essential")} disabled={p.answered}>{card.rightLabel || "เก็บไว้"} <ArrowRight size={20} /></button></>}</div><div className="lane-meta"><span>ชีวิต {"◆".repeat(p.lives)}{"◇".repeat(3 - p.lives)}</span><span><Zap size={14} /> Power {p.power}</span></div></section>; })}
           </div>
           <div className="versus-footer"><span>Player 1 ถูกล็อกกับมือของตัวเอง</span><strong>SAFE ZONE · มือข้ามกลางไม่สลับเจ้าของ</strong><span>Player 2 ถูกล็อกกับมือของตัวเอง</span></div>
           <div className="bottom-progress"><div><span style={{ width: `${progress}%` }} /></div><small>{Math.round(progress)}% ของการแข่งขัน</small></div>
