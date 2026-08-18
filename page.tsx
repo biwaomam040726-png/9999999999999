@@ -564,13 +564,15 @@ export default function Home() {
         });
       });
     }; const primaryByPlayer: [number | null, number | null] = [null, null]; const powerHoldSince: [number, number] = [0, 0]; const powerLatched: [boolean, boolean] = [false, false];
+    const vsSwipeStates = ([0, 1] as PlayerId[]).map(() => ({ anchorX: null as number | null, anchorY: null as number | null, direction: 0 as -1 | 0 | 1, startedAt: 0, progressBucket: 0, cooldownUntil: 0 }));
 
     const setLabel = (label: string) => { if (label !== lastLabel) { lastLabel = label; setGestureLabel(label); } };
     const setPlayerLabel = (player: PlayerId, label: string) => setPlayerGesture(current => { if (current[player] === label) return current; const next = [...current] as [string, string]; next[player] = label; return next; });
     // MediaPipe landmarks are not mirrored, while the camera preview is. Convert to visual screen X first.
     const visualX = (rawX: number) => 1 - rawX;
-    const ownerZone = (rawX: number): PlayerId | null => { const x = visualX(rawX); return x <= .45 ? 0 : x >= .55 ? 1 : null; };
-    const canActAtX = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return mode === "versus" ? (owner === 0 ? x < .60 : x > .40) : true; };
+    const ownerZone = (rawX: number): PlayerId | null => { const x = visualX(rawX); return x <= .47 ? 0 : x >= .53 ? 1 : null; };
+    const inPlayerLane = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return owner === 0 ? x <= .495 : x >= .505; };
+    const canActAtX = (owner: PlayerId, rawX: number) => mode === "versus" ? inPlayerLane(owner, rawX) : true;
 
     const boot = async () => {
       try {
@@ -609,7 +611,11 @@ export default function Home() {
           observations.forEach(obs => {
             let best: HandTrack | null = null; let bestScore = Infinity;
             unmatchedTracks.forEach(track => {
-              if (used.has(track.id)) return; const d = Math.hypot(obs.x - track.x, obs.y - track.y); const handedPenalty = track.handedness !== "Unknown" && obs.handedness !== "Unknown" && track.handedness !== obs.handedness ? .045 : 0; const score = d + handedPenalty;
+              if (used.has(track.id)) return;
+              // VS: a locked hand may only be matched by an observation inside the same player's half.
+              // This prevents P1/P2 track IDs from swapping when the two hands approach the center.
+              if (mode === "versus" && track.owner !== null && !inPlayerLane(track.owner, obs.x)) return;
+              const d = Math.hypot(obs.x - track.x, obs.y - track.y); const handedPenalty = track.handedness !== "Unknown" && obs.handedness !== "Unknown" && track.handedness !== obs.handedness ? .045 : 0; const score = d + handedPenalty;
               if (score < bestScore && d < .24) { best = track; bestScore = score; }
             });
             let track = best;
@@ -643,10 +649,10 @@ export default function Home() {
 
             // VS calibration / re-acquisition. A primary hand is only acquired inside its own home zone with an open palm.
             if (mode === "versus" && track.owner === null) {
-              const candidate = ownerZone(track.x);
+              const candidate = ownerZone(track.rawX);
               if (candidate !== null && open && track.stableFrames >= 8 && primaryByPlayer[candidate] === null) {
                 if (track.candidateOwner !== candidate) { track.candidateOwner = candidate; track.candidateSince = now; }
-                if (now - track.candidateSince >= 520) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; track.swipeAnchorX = visualX(track.rawX); track.swipeAnchorY = track.rawY; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
+                if (now - track.candidateSince >= 520) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; track.swipeAnchorX = visualX(track.rawX); track.swipeAnchorY = track.rawY; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; }); setPlayerLabel(candidate, candidate === 0 ? "LOCKED · ฝั่งซ้าย" : "LOCKED · ฝั่งขวา"); }
               } else { track.candidateOwner = null; track.candidateSince = 0; }
             }
 
@@ -655,7 +661,7 @@ export default function Home() {
               ([0, 1] as PlayerId[]).forEach(owner => {
                 const pid = primaryByPlayer[owner]; const primary = pid ? tracks.get(pid) : null; if (!primary || now - primary.lastSeen > 450) return;
                 const sx = visualX(track.x);
-                if (Math.hypot(track.x - primary.x, track.y - primary.y) < .34 && (owner === 0 ? sx < .52 : sx > .48)) { track.owner = owner; track.primary = false; }
+                if (Math.hypot(track.x - primary.x, track.y - primary.y) < .34 && inPlayerLane(owner, track.rawX)) { track.owner = owner; track.primary = false; }
               });
             }
 
@@ -681,6 +687,10 @@ export default function Home() {
 
             if (mode === "solo" && handSetupStepRef.current !== 2) return;
             if (mode === "versus" && !playerReadyRef.current[owner]) return;
+            if (mode === "versus" && !inPlayerLane(owner, track.rawX)) {
+              setPlayerLabel(owner, owner === 0 ? "กลับมาฝั่งซ้ายเพื่อควบคุม" : "กลับมาฝั่งขวาเพื่อควบคุม");
+              return;
+            }
 
             // Gesture motion uses raw mirrored coordinates for lower latency; rendering remains smoothed.
             const gestureX = visualX(track.rawX);
@@ -712,56 +722,9 @@ export default function Home() {
               setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.confirm(owner); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
             }
 
-            // VS V23: simple locked-hand displacement detector.
-            // After calibration, a player's track owns its gestures. We only measure horizontal displacement from an anchor:
-            // tiny jitter is ignored, natural diagonal movement is tolerated, and there is no velocity/monotonicity gate.
-            if (mode === "versus") {
-              const resetVsSwipe = (x = gestureX, y = track.rawY) => { track.swipeAnchorX = x; track.swipeAnchorY = y; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; };
-              if (!track.armed || fist || now - track.lastActionAt < 280) { resetVsSwipe(); return; }
-              if (track.swipeAnchorX === undefined || track.swipeAnchorY === undefined || !track.swipeAnchorAt) resetVsSwipe();
-              const anchorX = track.swipeAnchorX ?? gestureX; const anchorY = track.swipeAnchorY ?? track.rawY; const anchorAt = track.swipeAnchorAt ?? now;
-              const dx = gestureX - anchorX; const dy = track.rawY - anchorY; const absDx = Math.abs(dx); const absDy = Math.abs(dy); const elapsedMs = now - anchorAt;
-              // About half to three-quarters of a visible palm. Easier than V22, but still far above camera jitter.
-              const threshold = clamp(track.palmWidth * .50, .050, .085);
-              const startThreshold = .014;
-
-              if (!track.swipeDirection) {
-                if (absDx < startThreshold) { if (elapsedMs > 1100) resetVsSwipe(); return; }
-                track.swipeDirection = dx > 0 ? 1 : -1;
-                track.swipeProgressBucket = 0;
-                setPlayerLabel(owner, `${track.swipeDirection > 0 ? "→" : "←"} เริ่มปัด`);
-              }
-
-              const direction = track.swipeDirection || (dx > 0 ? 1 : -1);
-              const signedDx = dx * direction;
-              // Reset only on a real reversal, very large vertical travel, or a long abandoned gesture.
-              if (signedDx < -.035 || absDy > .28 || elapsedMs > 2300) { resetVsSwipe(); return; }
-
-              const progress = clamp(signedDx / threshold, 0, 1);
-              const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
-              if (bucket > (track.swipeProgressBucket ?? 0)) {
-                track.swipeProgressBucket = bucket;
-                setPlayerLabel(owner, `${direction > 0 ? "→" : "←"} กำลังปัด ${bucket}%`);
-              }
-
-              if (signedDx >= threshold) {
-                const kind: AnswerKind = direction > 0 ? "essential" : "noise";
-                const label = active.questionMode === "mcq"
-                  ? (direction > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า")
-                  : (direction > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
-                setPlayerLabel(owner, label);
-                active.swipe(owner, kind);
-                track.lastActionAt = now;
-                track.armed = false;
-                track.neutralSince = 0;
-                track.trail.length = 0;
-                track.selectedLatch = false;
-                resetVsSwipe();
-                setHandSelected(false);
-                return;
-              }
-              return;
-            }
+            // VS gestures are evaluated once per player after all hands in this frame are matched.
+            // This avoids per-track race conditions and keeps P1/P2 completely independent.
+            if (mode === "versus") return;
 
             // SOLO keeps the proven trail classifier.
             if (!track.armed || track.pinchState || fist || ext < 2 || now - track.lastActionAt < 260 || track.trail.length < 3) return;
@@ -775,6 +738,70 @@ export default function Home() {
               setPlayerLabel(owner, label); setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
             }
           });
+
+          // V24 VS: one independent swipe state per player, strictly confined to that player's half.
+          // P1 = left half, P2 = right half. No ownership crossing, no velocity gate, no handedness dependence.
+          if (mode === "versus") {
+            const active = actionRef.current;
+            ([0, 1] as PlayerId[]).forEach(owner => {
+              const state = vsSwipeStates[owner];
+              const pid = primaryByPlayer[owner];
+              const primary = pid ? tracks.get(pid) : null;
+              const reset = (x?: number, y?: number) => {
+                state.anchorX = x ?? null; state.anchorY = y ?? null; state.direction = 0; state.startedAt = 0; state.progressBucket = 0;
+              };
+              if (!active || active.screen !== "game" || active.paused || !playerReadyRef.current[owner] || playersRef.current[owner].answered || !primary || now - primary.lastSeen > 220) {
+                reset(primary ? visualX(primary.rawX) : undefined, primary?.rawY);
+                return;
+              }
+              if (!inPlayerLane(owner, primary.rawX)) {
+                reset();
+                setPlayerLabel(owner, owner === 0 ? "P1 · กลับมาฝั่งซ้าย" : "P2 · กลับมาฝั่งขวา");
+                return;
+              }
+              const x = visualX(primary.rawX); const y = primary.rawY;
+              if (now < state.cooldownUntil || primary.pinchState) { reset(x, y); return; }
+              if (state.anchorX === null || state.anchorY === null) { reset(x, y); setPlayerLabel(owner, owner === 0 ? "P1 · พร้อมปัดในฝั่งซ้าย" : "P2 · พร้อมปัดในฝั่งขวา"); return; }
+
+              let dx = x - state.anchorX; const dy = y - state.anchorY; const absDx = Math.abs(dx);
+              const startThreshold = .010;
+              const threshold = clamp(primary.palmWidth * .42, .040, .068);
+
+              if (state.direction === 0) {
+                if (absDx < startThreshold) {
+                  // Let the neutral anchor follow tiny camera drift, but not a real swipe.
+                  state.anchorX = state.anchorX * .88 + x * .12;
+                  state.anchorY = state.anchorY * .88 + y * .12;
+                  return;
+                }
+                state.direction = dx > 0 ? 1 : -1;
+                state.startedAt = now;
+                state.progressBucket = 0;
+                setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · ${state.direction > 0 ? "→ ปัดขวา" : "← ปัดซ้าย"}`);
+              }
+
+              const signedDx = (x - (state.anchorX ?? x)) * state.direction;
+              const elapsed = now - state.startedAt;
+              if (signedDx < -.020 || Math.abs(dy) > .34 || elapsed > 1900) { reset(x, y); return; }
+
+              const progress = clamp(signedDx / threshold, 0, 1);
+              const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
+              if (bucket > state.progressBucket) {
+                state.progressBucket = bucket;
+                setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · ${state.direction > 0 ? "→" : "←"} ${bucket}%`);
+              }
+              if (signedDx >= threshold) {
+                const kind: AnswerKind = state.direction > 0 ? "essential" : "noise";
+                const label = state.direction > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ไม่สำคัญ";
+                active.swipe(owner, kind);
+                setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · ${label}`);
+                state.cooldownUntil = now + 520;
+                primary.lastActionAt = now;
+                primary.armed = false;
+                reset(x, y);
+              }
+            });
+          }
 
           // Hide cursors for missing primaries and allow controlled re-acquisition after a real loss.
           ([0, 1] as PlayerId[]).forEach(owner => {

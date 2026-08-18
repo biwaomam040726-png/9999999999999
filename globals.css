@@ -315,3 +315,8 @@ body.hand-game-active .hand-ai-visible-hud{bottom:14px}
   .versus-game-shell{padding:76px 8px 22px!important}
   .versus-topline,.versus-footer,.versus-game-shell>.bottom-progress,.versus-lanes{width:calc(100vw - 12px)!important}
 }
+
+/* V24 strict two-player lane ownership */
+.versus-mode .zone-left{background:linear-gradient(90deg,rgba(57,196,255,.035),transparent)}
+.versus-mode .zone-right{background:linear-gradient(270deg,rgba(184,116,255,.035),transparent)}
+.versus-mode .zone-dead{background:rgba(255,255,255,.018)}
