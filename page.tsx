@@ -79,6 +79,11 @@ type HandTrack = {
   fistSince: number;
   openSince: number;
   raisedSince: number;
+  swipeAnchorX?: number;
+  swipeAnchorY?: number;
+  swipeAnchorAt?: number;
+  swipeDirection?: -1 | 0 | 1;
+  swipeProgressBucket?: number;
   dwellSince?: number;
   dwellTarget?: string;
   targetLandmarks: Landmark[] | null;
@@ -565,7 +570,7 @@ export default function Home() {
     // MediaPipe landmarks are not mirrored, while the camera preview is. Convert to visual screen X first.
     const visualX = (rawX: number) => 1 - rawX;
     const ownerZone = (rawX: number): PlayerId | null => { const x = visualX(rawX); return x <= .45 ? 0 : x >= .55 ? 1 : null; };
-    const canActAtX = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return owner === 0 ? x < .49 : x > .51; };
+    const canActAtX = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return mode === "versus" ? (owner === 0 ? x < .60 : x > .40) : true; };
 
     const boot = async () => {
       try {
@@ -609,7 +614,7 @@ export default function Home() {
             });
             let track = best;
             if (!track) {
-              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, rawX: obs.x, rawY: obs.y, vx: 0, vy: 0, stableFrames: 0, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0, targetLandmarks: obs.hand.map(v => ({...v})), renderLandmarks: null };
+              track = { id: nextTrackId++, owner: mode === "solo" ? 0 : null, primary: mode === "solo" && primaryByPlayer[0] === null, candidateOwner: null, candidateSince: 0, lastSeen: now, handedness: obs.handedness, x: obs.x, y: obs.y, palmWidth: obs.palmWidth, rawX: obs.x, rawY: obs.y, vx: 0, vy: 0, stableFrames: 0, trail: [], lastActionAt: 0, armed: true, neutralSince: now, pinchState: false, pinchOnFrames: 0, pinchOffFrames: 0, selectedLatch: false, fistSince: 0, openSince: 0, raisedSince: 0, swipeDirection: 0, swipeProgressBucket: 0, targetLandmarks: obs.hand.map(v => ({...v})), renderLandmarks: null };
               if (track.primary) primaryByPlayer[0] = track.id; tracks.set(track.id, track);
             }
             used.add(track.id);
@@ -641,7 +646,7 @@ export default function Home() {
               const candidate = ownerZone(track.x);
               if (candidate !== null && open && track.stableFrames >= 8 && primaryByPlayer[candidate] === null) {
                 if (track.candidateOwner !== candidate) { track.candidateOwner = candidate; track.candidateSince = now; }
-                if (now - track.candidateSince >= 520) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
+                if (now - track.candidateSince >= 520) { track.owner = candidate; track.primary = true; primaryByPlayer[candidate] = track.id; track.swipeAnchorX = visualX(track.rawX); track.swipeAnchorY = track.rawY; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; setPlayerReady(current => { if (current[candidate]) return current; const next = [...current] as [boolean, boolean]; next[candidate] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; }); setPlayerLabel(candidate, `LOCKED · ${track.handedness === "Unknown" ? "มือหลัก" : track.handedness}`); }
               } else { track.candidateOwner = null; track.candidateSince = 0; }
             }
 
@@ -679,11 +684,15 @@ export default function Home() {
 
             // Gesture motion uses raw mirrored coordinates for lower latency; rendering remains smoothed.
             const gestureX = visualX(track.rawX);
-            track.trail.push({ x: gestureX, y: track.rawY, at: now }); while (track.trail.length && now - track.trail[0].at > (mode === "versus" ? 920 : 680)) track.trail.shift();
-            const recentNeutral = track.trail.filter(s => now - s.at <= 180); const neutralDx = recentNeutral.length > 1 ? Math.abs(recentNeutral[recentNeutral.length - 1].x - recentNeutral[0].x) : 0;
-            const rearmDelay = mode === "versus" ? 230 : 260;
-            const neutralLimit = mode === "versus" ? .042 : .035;
-            if (!track.armed && now - track.lastActionAt > rearmDelay && neutralDx < neutralLimit && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > (mode === "versus" ? 90 : 110)) track.armed = true; } else if (neutralDx >= (mode === "versus" ? .06 : .05)) track.neutralSince = 0;
+            if (mode === "solo") {
+              track.trail.push({ x: gestureX, y: track.rawY, at: now }); while (track.trail.length && now - track.trail[0].at > 680) track.trail.shift();
+              const recentNeutral = track.trail.filter(s => now - s.at <= 180); const neutralDx = recentNeutral.length > 1 ? Math.abs(recentNeutral[recentNeutral.length - 1].x - recentNeutral[0].x) : 0;
+              const rearmDelay = 260; const neutralLimit = .035;
+              if (!track.armed && now - track.lastActionAt > rearmDelay && neutralDx < neutralLimit && !track.pinchState && !fist) { if (!track.neutralSince) track.neutralSince = now; if (now - track.neutralSince > 110) track.armed = true; } else if (neutralDx >= .05) track.neutralSince = 0;
+            } else if (!track.armed && now - track.lastActionAt > 360) {
+              // VS re-arm is deliberately simple. A completed round already blocks duplicate answers.
+              track.armed = true; track.swipeAnchorX = gestureX; track.swipeAnchorY = track.rawY; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0;
+            }
 
             if (active.screen === "lobby") { return; }
             if (active.screen !== "game" || (mode === "solo" && active.soloFeedback)) return;
@@ -701,20 +710,40 @@ export default function Home() {
               setPlayerLabel(owner, "FIST · เก็บข้อมูล"); active.confirm(owner); track.selectedLatch = false; track.lastActionAt = now; track.armed = false; track.trail.length = 0; setHandSelected(false); return;
             }
 
-            // Swipe = roughly one palm width, horizontal-dominant, velocity constrained, one-shot until neutral re-arm.
-            if (!track.armed || track.pinchState || fist || (mode === "solo" && ext < 2) || now - track.lastActionAt < (mode === "versus" ? 220 : 260) || track.trail.length < 3) return;
-            const windowSamples = track.trail.filter(s => now - s.at <= (mode === "versus" ? 1050 : 900)); if (windowSamples.length < 3) return;
+            // VS uses an anchor-based swipe detector. It is independent per locked player and does not rely on trail extrema.
+            if (mode === "versus") {
+              const resetVsSwipe = (x = gestureX, y = track.rawY) => { track.swipeAnchorX = x; track.swipeAnchorY = y; track.swipeAnchorAt = now; track.swipeDirection = 0; track.swipeProgressBucket = 0; };
+              if (!track.armed || fist || now - track.lastActionAt < 320) { resetVsSwipe(); return; }
+              if (track.swipeAnchorX === undefined || track.swipeAnchorY === undefined || !track.swipeAnchorAt) resetVsSwipe();
+              const anchorX = track.swipeAnchorX ?? gestureX; const anchorY = track.swipeAnchorY ?? track.rawY; const anchorAt = track.swipeAnchorAt ?? now;
+              const dx = gestureX - anchorX; const dy = track.rawY - anchorY; const absDx = Math.abs(dx); const absDy = Math.abs(dy); const elapsedMs = now - anchorAt;
+              const threshold = clamp(track.palmWidth * .72, .068, .118); const startThreshold = Math.min(.022, threshold * .25);
+              if (!track.swipeDirection) {
+                if (absDx < startThreshold) { if (elapsedMs > 650) resetVsSwipe(); return; }
+                if (absDx <= absDy * .55) { if (absDy > .06 || elapsedMs > 520) resetVsSwipe(); return; }
+                track.swipeDirection = dx > 0 ? 1 : -1; track.swipeProgressBucket = 0;
+              }
+              const direction = track.swipeDirection || (dx > 0 ? 1 : -1); const signedDx = dx * direction; const elapsed = Math.max(.05, elapsedMs / 1000); const averageVelocity = signedDx / elapsed;
+              if (signedDx < -.018 || absDy > .14 || elapsedMs > 1650) { resetVsSwipe(); return; }
+              const progress = clamp(signedDx / threshold, 0, 1); const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
+              if (bucket > (track.swipeProgressBucket ?? 0)) { track.swipeProgressBucket = bucket; setPlayerLabel(owner, `${direction > 0 ? "→" : "←"} กำลังปัด ${bucket}%`); }
+              if (signedDx >= threshold && absDx > absDy * .52 && elapsedMs >= 80 && averageVelocity >= .045) {
+                const kind: AnswerKind = direction > 0 ? "essential" : "noise"; const label = active.questionMode === "mcq" ? (direction > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า") : (direction > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
+                setPlayerLabel(owner, label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; resetVsSwipe(); setHandSelected(false); return;
+              }
+              return;
+            }
+
+            // SOLO keeps the proven trail classifier.
+            if (!track.armed || track.pinchState || fist || ext < 2 || now - track.lastActionAt < 260 || track.trail.length < 3) return;
+            const windowSamples = track.trail.filter(s => now - s.at <= 900); if (windowSamples.length < 3) return;
             let min = windowSamples[0]; let max = windowSamples[0]; windowSamples.forEach(s => { if (s.x < min.x) min = s; if (s.x > max.x) max = s; });
             const currentSample = windowSamples[windowSamples.length - 1]; const rightDx = currentSample.x - min.x; const leftDx = max.x - currentSample.x; const dir = rightDx >= leftDx ? 1 : -1; const start = dir > 0 ? min : max; const dx = currentSample.x - start.x; const dy = currentSample.y - start.y; const duration = Math.max(.016, (currentSample.at - start.at) / 1000); const velocity = Math.abs(dx) / duration;
-            const threshold = mode === "versus" ? clamp(track.palmWidth * .66, .055, .115) : clamp(track.palmWidth * .80, .070, .145);
+            const threshold = clamp(track.palmWidth * .80, .070, .145);
             let forward = 0; let backward = 0; for (let i = 1; i < windowSamples.length; i += 1) { const step = (windowSamples[i].x - windowSamples[i - 1].x) * dir; if (step > .0015) forward += step; else if (step < -.0015) backward += Math.abs(step); } const monotonic = forward / Math.max(.001, forward + backward);
-            const horizontalRatio = mode === "versus" ? .70 : .90;
-            const maxDuration = mode === "versus" ? 1.15 : .90;
-            const minVelocity = mode === "versus" ? .055 : .10;
-            const minMonotonic = mode === "versus" ? .46 : .62;
-            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * horizontalRatio && duration >= .07 && duration <= maxDuration && velocity >= minVelocity && monotonic >= minMonotonic) {
+            if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * .90 && duration >= .07 && duration <= .90 && velocity >= .10 && monotonic >= .62) {
               const kind: AnswerKind = dx > 0 ? "essential" : "noise"; const label = active.questionMode === "mcq" ? (dx > 0 ? "SWIPE RIGHT · คำตอบถัดไป" : "SWIPE LEFT · คำตอบก่อนหน้า") : (dx > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ตัด");
-              setPlayerLabel(owner, label); if (mode === "solo") setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
+              setPlayerLabel(owner, label); setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
             }
           });
 
