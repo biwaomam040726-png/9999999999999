@@ -579,14 +579,30 @@ export default function Home() {
         });
       });
     }; const primaryByPlayer: [number | null, number | null] = [null, null]; const powerHoldSince: [number, number] = [0, 0]; const powerLatched: [boolean, boolean] = [false, false];
-    const vsSwipeStates = ([0, 1] as PlayerId[]).map(() => ({ samples: [] as { x: number; y: number; at: number }[], progressBucket: 0, cooldownUntil: 0, lastDirection: 0 as -1 | 0 | 1 }));
+    const vsSwipeStates = ([0, 1] as PlayerId[]).map(() => ({ anchorX: null as number | null, anchorY: null as number | null, anchorAt: 0, progressBucket: 0, cooldownUntil: 0, lastDirection: 0 as -1 | 0 | 1 }));
 
     const setLabel = (label: string) => { if (label !== lastLabel) { lastLabel = label; setGestureLabel(label); } };
     const setPlayerLabel = (player: PlayerId, label: string) => setPlayerGesture(current => { if (current[player] === label) return current; const next = [...current] as [string, string]; next[player] = label; return next; });
-    // MediaPipe landmarks are not mirrored, while the camera preview is. Convert to visual screen X first.
+    // Camera preview is mirrored. In VS, ownership is determined from the ACTUAL on-screen lane rectangle,
+    // using the same mirrored X used to draw the skeleton. This makes "what the player sees" authoritative.
     const visualX = (rawX: number) => 1 - rawX;
-    const ownerZone = (rawX: number): PlayerId | null => { const x = visualX(rawX); return x <= .485 ? 0 : x >= .515 ? 1 : null; };
-    const inPlayerLane = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return owner === 0 ? x <= .485 : x >= .515; };
+    const laneOwnerForObservation = (obs: { x: number; y: number }): PlayerId | null => {
+      const px = visualX(obs.x) * window.innerWidth;
+      const py = obs.y * window.innerHeight;
+      const leftRect = document.querySelector<HTMLElement>(".versus-lane.player-1")?.getBoundingClientRect();
+      const rightRect = document.querySelector<HTMLElement>(".versus-lane.player-2")?.getBoundingClientRect();
+      const inside = (rect?: DOMRect) => !!rect && px >= rect.left && px <= rect.right && py >= rect.top - 40 && py <= rect.bottom + 40;
+      if (inside(leftRect)) return 0;
+      if (inside(rightRect)) return 1;
+      // Fallback before the VS lanes are mounted: strict visual half split with a small center dead-zone.
+      const nx = px / Math.max(1, window.innerWidth);
+      return nx <= .49 ? 0 : nx >= .51 ? 1 : null;
+    };
+    const ownerZone = (rawX: number): PlayerId | null => {
+      const x = visualX(rawX);
+      return x <= .49 ? 0 : x >= .51 ? 1 : null;
+    };
+    const inPlayerLane = (owner: PlayerId, rawX: number) => { const x = visualX(rawX); return owner === 0 ? x <= .49 : x >= .51; };
     const canActAtX = (owner: PlayerId, rawX: number) => mode === "versus" ? inPlayerLane(owner, rawX) : true;
 
     const boot = async () => {
@@ -623,32 +639,25 @@ export default function Home() {
           // V25 VS authority: current screen half decides the player every frame.
           // No persisted track owner is allowed to award points in VS mode.
           const vsFrameHands = ([0, 1] as PlayerId[]).map(owner => {
-            const candidates = observations.filter(obs => ownerZone(obs.x) === owner).sort((a, b) => b.palmWidth - a.palmWidth);
+            const candidates = observations.filter(obs => laneOwnerForObservation(obs) === owner).sort((a, b) => b.palmWidth - a.palmWidth);
             return candidates[0] ?? null;
           }) as [typeof observations[number] | null, typeof observations[number] | null];
           if (mode === "versus") {
             ([0, 1] as PlayerId[]).forEach(owner => {
               const obs = vsFrameHands[owner];
               if (!obs) return;
-              vsZoneHands[owner] = obs.hand.map(v => ({...v})); vsZoneLastSeen[owner] = now;
-              const ext = fingerCount(obs.hand); const pinchRatio = distance(obs.hand[4], obs.hand[8]) / Math.max(.035, obs.palmWidth);
-              const fist = ext <= 1 && [8, 12, 16, 20].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 < [5, 9, 13, 17].reduce((sum, i) => sum + distance(obs.hand[i], obs.hand[0]), 0) / 4 * 1.55;
-              const open = ext >= 3 && !fist && pinchRatio > .55;
-              const tip = obs.hand[8]; const cursor = cursorRefs[owner].current;
-              if (cursor) { cursor.style.opacity = "1"; cursor.style.transform = `translate(${(1 - tip.x) * innerWidth}px,${tip.y * innerHeight}px)`; }
-              if (!playerReadyRef.current[owner]) {
-                // V26: readiness is based on stable hand PRESENCE in the correct half, not a fragile open-palm pose.
-                vsReadySince[owner] = vsReadySince[owner] || now;
-                const readyProgress = clamp(Math.round((now - vsReadySince[owner]) / 5.5), 0, 100);
-                setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · สแกนมือ ${readyProgress}%`);
-                if (now - vsReadySince[owner] >= 550) {
-                  setPlayerReady(current => { const next = [...current] as [boolean, boolean]; next[owner] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; });
-                  setPlayerLabel(owner, owner === 0 ? "P1 · READY ฝั่งซ้าย" : "P2 · READY ฝั่งขวา");
-                }
+              vsZoneHands[owner] = obs.hand.map(v => ({...v}));
+              vsZoneLastSeen[owner] = now;
+              const tip = obs.hand[8];
+              const cursor = cursorRefs[owner].current;
+              if (cursor) {
+                cursor.style.opacity = "1";
+                cursor.style.transform = `translate(${(1 - tip.x) * innerWidth}px,${tip.y * innerHeight}px)`;
               }
             });
           }
 
+          if (mode === "solo") {
           // Greedy nearest-neighbour track matching. Ownership is stored on the track, not derived from current x every frame.
           const unmatchedTracks = [...tracks.values()].filter(t => now - t.lastSeen < 1700); const used = new Set<number>();
           observations.forEach(obs => {
@@ -783,86 +792,129 @@ export default function Home() {
               setPlayerLabel(owner, label); setLabel(label); active.swipe(owner, kind); track.lastActionAt = now; track.armed = false; track.neutralSince = 0; track.trail.length = 0; track.selectedLatch = false; setHandSelected(false);
             }
           });
+          }
 
-          // V25 VS ZONE-LOCKED ENGINE: P1 is always the current hand in the left half; P2 is always the current hand in the right half.
-          // This completely removes the track-owner swap that could award P1 gestures to P2.
+          // V27 VS LANE-AUTHORITATIVE ENGINE: each player only receives the hand whose rendered
+          // palm is physically inside that player's DOM lane. No track.owner, handedness, or old calibration can score.
           if (mode === "versus") {
             const active = actionRef.current;
             ([0, 1] as PlayerId[]).forEach(owner => {
-              const state = vsSwipeStates[owner]; const obs = vsFrameHands[owner];
-              const resetSamples = () => { state.samples.length = 0; state.progressBucket = 0; state.lastDirection = 0; };
+              const state = vsSwipeStates[owner];
+              const obs = vsFrameHands[owner];
+              const resetAnchor = (x?: number, y?: number) => {
+                state.anchorX = typeof x === "number" ? x : null;
+                state.anchorY = typeof y === "number" ? y : null;
+                state.anchorAt = typeof x === "number" ? now : 0;
+                state.progressBucket = 0;
+                state.lastDirection = 0;
+              };
+
               if (!obs) {
-                resetSamples();
+                resetAnchor();
                 if (!playerReadyRef.current[owner]) vsReadySince[owner] = 0;
                 if (cursorRefs[owner].current) cursorRefs[owner].current!.style.opacity = "0";
-                if (active?.screen === "game") setPlayerLabel(owner, playerReadyRef.current[owner] ? (owner === 0 ? "P1 · กลับมือเข้าฝั่งซ้าย" : "P2 · กลับมือเข้าฝั่งขวา") : (owner === 0 ? "P1 · ยกมือในฝั่งซ้าย" : "P2 · ยกมือในฝั่งขวา"));
+                if (active?.screen === "game") {
+                  setPlayerLabel(owner, owner === 0 ? "P1 · รอมือในฝั่งซ้าย" : "P2 · รอมือในฝั่งขวา");
+                }
                 return;
               }
-              const x = visualX(obs.x); const y = obs.y;
-              if (!active || active.screen !== "game" || active.paused || playersRef.current[owner].answered) { resetSamples(); return; }
 
-              // If the match started before this hand finished calibration, visible stable presence can complete READY here too.
+              // x is exactly the same mirrored coordinate used by the skeleton on screen.
+              const x = visualX(obs.x);
+              const y = obs.y;
+
               if (!playerReadyRef.current[owner]) {
                 vsReadySince[owner] = vsReadySince[owner] || now;
-                const readyProgress = clamp(Math.round((now - vsReadySince[owner]) / 5.5), 0, 100);
+                const readyProgress = clamp(Math.round((now - vsReadySince[owner]) / 4.5), 0, 100);
                 setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · สแกนมือ ${readyProgress}%`);
-                if (now - vsReadySince[owner] < 550) { resetSamples(); return; }
-                setPlayerReady(current => { const next = [...current] as [boolean, boolean]; next[owner] = true; if (next.every(Boolean)) { setHandReady(true); setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน"); } return next; });
+                if (now - vsReadySince[owner] < 450) {
+                  resetAnchor(x, y);
+                  return;
+                }
+                setPlayerReady(current => {
+                  const next = [...current] as [boolean, boolean];
+                  next[owner] = true;
+                  if (next.every(Boolean)) {
+                    setHandReady(true);
+                    setLabel("✓ มือผู้เล่นทั้ง 2 พร้อมใช้งาน");
+                  }
+                  return next;
+                });
                 playerReadyRef.current = owner === 0 ? [true, playerReadyRef.current[1]] : [playerReadyRef.current[0], true];
                 setPlayerLabel(owner, owner === 0 ? "P1 · READY ฝั่งซ้าย" : "P2 · READY ฝั่งขวา");
-                resetSamples();
+                resetAnchor(x, y);
                 return;
               }
 
-              if (now < state.cooldownUntil) { resetSamples(); return; }
+              if (!active || active.screen !== "game" || active.paused || playersRef.current[owner].answered) {
+                resetAnchor(x, y);
+                return;
+              }
 
-              // V26 SIMPLE HISTORY SWIPE: no fingerCount, fist, pinch or velocity gates in VS.
-              state.samples.push({ x, y, at: now });
-              while (state.samples.length && now - state.samples[0].at > 620) state.samples.shift();
-              if (state.samples.length < 4) { setPlayerLabel(owner, owner === 0 ? "P1 · พร้อมปัด" : "P2 · พร้อมปัด"); return; }
+              if (now < state.cooldownUntil) {
+                resetAnchor(x, y);
+                return;
+              }
 
-              // Average a few oldest/newest frames to suppress camera jitter without delaying the gesture.
-              const head = state.samples.slice(0, Math.min(3, state.samples.length));
-              const tail = state.samples.slice(Math.max(0, state.samples.length - 3));
-              const avg = (arr: { x: number; y: number; at: number }[], key: "x" | "y") => arr.reduce((sum, s) => sum + s[key], 0) / Math.max(1, arr.length);
-              const startX = avg(head, "x"); const startY = avg(head, "y");
-              const endX = avg(tail, "x"); const endY = avg(tail, "y");
-              const dx = endX - startX; const dy = endY - startY;
+              if (state.anchorX === null || state.anchorY === null || now - state.anchorAt > 1250) {
+                resetAnchor(x, y);
+                setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · พร้อมปัด`);
+                return;
+              }
+
+              const dx = x - state.anchorX;
+              const dy = y - state.anchorY;
               const absDx = Math.abs(dx);
-              const threshold = clamp(obs.palmWidth * .34, .028, .052);
-              const direction: -1 | 0 | 1 = absDx >= .008 ? (dx > 0 ? 1 : -1) : 0;
-              const horizontalEnough = absDx > Math.abs(dy) * .38;
+              const absDy = Math.abs(dy);
+              // Easy but not twitchy: about 1/3–1/2 palm width, never less than ~2.4% of screen.
+              const threshold = clamp(obs.palmWidth * .30, .024, .045);
+              const direction: -1 | 0 | 1 = absDx >= .006 ? (dx > 0 ? 1 : -1) : 0;
+              const horizontalEnough = absDx > absDy * .22;
               const progress = horizontalEnough ? clamp(absDx / threshold, 0, 1) : 0;
               const bucket = progress >= .75 ? 75 : progress >= .5 ? 50 : progress >= .25 ? 25 : 0;
 
-              if (direction && (direction !== state.lastDirection || bucket > state.progressBucket)) {
-                state.lastDirection = direction; state.progressBucket = bucket;
+              // Tiny hand jitter recenters the neutral anchor slowly instead of building fake swipe distance.
+              if (absDx < .010 && absDy < .025 && now - state.anchorAt > 100) {
+                state.anchorX = state.anchorX * .88 + x * .12;
+                state.anchorY = state.anchorY * .88 + y * .12;
+                state.anchorAt = now - 120;
+              }
+
+              if (direction && bucket > state.progressBucket) {
+                state.lastDirection = direction;
+                state.progressBucket = bucket;
                 setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · ${direction > 0 ? "→" : "←"} ${bucket}%`);
               }
 
               if (horizontalEnough && absDx >= threshold) {
                 const kind: AnswerKind = dx > 0 ? "essential" : "noise";
                 const label = dx > 0 ? "SWIPE RIGHT · เก็บ" : "SWIPE LEFT · ไม่สำคัญ";
-                // owner is the current SCREEN HALF. P1 and P2 never share this state or score target.
+                // Critical invariant: owner comes ONLY from the DOM lane that contains this rendered hand.
                 active.swipe(owner, kind);
                 setPlayerLabel(owner, `${owner === 0 ? "P1" : "P2"} · ${label}`);
-                state.cooldownUntil = now + 520;
-                resetSamples();
+                state.cooldownUntil = now + 560;
+                resetAnchor(x, y);
+                return;
               }
+
+              // A large vertical-only move starts a fresh gesture instead of poisoning the next swipe.
+              if (absDy > .12 && absDy > absDx * 2.5) resetAnchor(x, y);
             });
           }
 
-          // Hide cursors for missing primaries and allow controlled re-acquisition after a real loss.
-          ([0, 1] as PlayerId[]).forEach(owner => {
-            const pid = primaryByPlayer[owner]; const primary = pid ? tracks.get(pid) : null;
-            if (!primary || now - primary.lastSeen > 280) { if (cursorRefs[owner].current) cursorRefs[owner].current!.style.opacity = "0"; }
-            if (primary && now - primary.lastSeen > 1650) { primary.primary = false; primary.owner = null; primaryByPlayer[owner] = null; if (mode === "solo") { handScanStartedAtRef.current = now; setHandReady(false); setHandSetupStep(1); setHandScanProgress(0); setLabel("มือหลุดจากกล้อง · ยกฝ่ามือเพื่อสแกนใหม่"); } }
-          });
-          [...tracks.values()].forEach(track => { if (now - track.lastSeen > 2200) tracks.delete(track.id); });
+          // Legacy primary-track cleanup is SOLO-only. VS does not use track.owner at all.
+          if (mode === "solo") {
+            ([0, 1] as PlayerId[]).forEach(owner => {
+              const pid = primaryByPlayer[owner]; const primary = pid ? tracks.get(pid) : null;
+              if (!primary || now - primary.lastSeen > 280) { if (cursorRefs[owner].current) cursorRefs[owner].current!.style.opacity = "0"; }
+              if (primary && now - primary.lastSeen > 1650) { primary.primary = false; primary.owner = null; primaryByPlayer[owner] = null; handScanStartedAtRef.current = now; setHandReady(false); setHandSetupStep(1); setHandScanProgress(0); setLabel("มือหลุดจากกล้อง · ยกฝ่ามือเพื่อสแกนใหม่"); }
+            });
+            [...tracks.values()].forEach(track => { if (now - track.lastSeen > 2200) tracks.delete(track.id); });
+          }
 
           // Two-hand power: VS counts hands by current screen half, so P1/P2 can never borrow each other's hands.
           ([0, 1] as PlayerId[]).forEach(owner => {
-            const ownedVisible = mode === "versus" ? observations.filter(obs => ownerZone(obs.x) === owner) : [...tracks.values()].filter(t => t.owner === owner && now - t.lastSeen < 260);
+            const ownedVisible = mode === "versus" ? observations.filter(obs => laneOwnerForObservation(obs) === owner) : [...tracks.values()].filter(t => t.owner === owner && now - t.lastSeen < 260);
             if (ownedVisible.length >= 2 && actionRef.current?.screen === "game" && !playersRef.current[owner].answered) {
               powerHoldSince[owner] = powerHoldSince[owner] || now;
               if (!powerLatched[owner] && now - powerHoldSince[owner] > 430) { actionRef.current?.usePower(owner); powerLatched[owner] = true; setPlayerLabel(owner, "2 HANDS · POWER"); }
