@@ -270,15 +270,15 @@ export default function Home() {
   const [players, setPlayers] = useState<[PlayerGame, PlayerGame]>([EMPTY_PLAYER(), EMPTY_PLAYER()]); const playersRef = useRef(players); useEffect(() => { playersRef.current = players; }, [players]);
   const [paused, setPaused] = useState(false); const [soloFeedback, setSoloFeedback] = useState<{ correct: boolean; title: string; body: string } | null>(null); const [burst, setBurst] = useState(0);
   const [cameraOn, setCameraOn] = useState(false); const [cameraMessage, setCameraMessage] = useState("กำลังเตรียมกล้อง…"); const [cameraFps, setCameraFps] = useState(0); const [soundOn, setSoundOn] = useState(true); const [voiceOn, setVoiceOn] = useState(true);
-  const [largeText, setLargeText] = useState(false); const [colorBlind, setColorBlind] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false);
+  const [largeText, setLargeText] = useState(false); const [colorBlind, setColorBlind] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false); const [handGuideOpen, setHandGuideOpen] = useState(true); const [answerFloatSpeed, setAnswerFloatSpeed] = useState<"slow" | "normal" | "fast">("slow"); const [ultraSpaceMode, setUltraSpaceMode] = useState(true);
   const [gestureLabel, setGestureLabel] = useState("กำลังเตรียม Hand AI"); const [handReady, setHandReady] = useState(false); const [handSelected, setHandSelected] = useState(false);
   const [playerReady, setPlayerReady] = useState<[boolean, boolean]>([false, false]); const playerReadyRef = useRef(playerReady); useEffect(() => { playerReadyRef.current = playerReady; }, [playerReady]);
   const [playerGesture, setPlayerGesture] = useState<[string, string]>(["รอมือผู้เล่น 1", "รอมือผู้เล่น 2"]);
   const [xrSupported, setXrSupported] = useState(false); const [xrActive, setXrActive] = useState(false); const [reports, setReports] = useState<StudentReport[]>([]);
 
-  const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
+  const videoRef = useRef<HTMLVideoElement>(null); const feedbackRef = useRef<HTMLDivElement>(null); const floatingAnswerRef = useRef<HTMLDivElement>(null); const cursorRefs = [useRef<HTMLDivElement>(null), useRef<HTMLDivElement>(null)] as const;
   const skeletonRefs = [useRef<HTMLCanvasElement>(null), useRef<HTMLCanvasElement>(null)] as const;
-  const xrRendererRef = useRef<THREE.WebGLRenderer | null>(null); const startTimeRef = useRef(0); const actionRef = useRef<GestureAction | null>(null); const playSound = useSound(soundOn); const roundAdvanceRef = useRef<number | null>(null);
+  const xrRendererRef = useRef<THREE.WebGLRenderer | null>(null); const startTimeRef = useRef(0); const actionRef = useRef<GestureAction | null>(null); const playSound = useSound(soundOn); const roundAdvanceRef = useRef<number | null>(null); const floatingAnswerMotionRef = useRef({ x: 24, y: 120, tx: 24, ty: 120, rot: -2, trot: -2, scale: 1.02, tscale: 1.02, phaseX: 0, phaseY: 1.4, phaseDepth: 0.8, phaseRoll: 0.2, bobAmpX: 16, bobAmpY: 10, bobSpeedX: 0.7, bobSpeedY: 0.52, depthAmp: 16, depthSpeed: 0.6, rollAmp: 5.5, rollSpeed: 0.44, glowPhase: 0.6 });
   const playableLevels = useMemo(() => { const ready = levels.filter(item => item.items.length > 0); return ready.length ? ready : normalizeLevels(LEVELS); }, [levels]);
   const level = playableLevels[levelIndex] ?? playableLevels[0]; const card = deck[cardIndex];
   const totalQuestions = Math.max(1, playableLevels.reduce((sum, item) => sum + item.items.length, 0)); const completedQuestions = playableLevels.slice(0, levelIndex).reduce((sum, item) => sum + item.items.length, 0) + cardIndex; const progress = completedQuestions / totalQuestions * 100;
@@ -304,6 +304,96 @@ export default function Home() {
     const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr; if (xr) void xr.isSessionSupported("immersive-ar").then(setXrSupported).catch(() => setXrSupported(false));
     return () => window.clearTimeout(task);
   }, []);
+  useEffect(() => {
+    if (screen !== "game" || mode !== "solo" || !card || questionMode(card) === "mcq") return;
+    const element = floatingAnswerRef.current;
+    if (!element) return;
+    const motion = floatingAnswerMotionRef.current;
+    const speedMap = { slow: .55, normal: .82, fast: 1.12 } as const;
+    const speed = speedMap[answerFloatSpeed];
+    const intersects = (box: { left: number; top: number; right: number; bottom: number }, avoid: { left: number; top: number; right: number; bottom: number }) => !(box.right < avoid.left || box.left > avoid.right || box.bottom < avoid.top || box.top > avoid.bottom);
+    const getAvoidRects = () => {
+      const rects: { left: number; top: number; right: number; bottom: number }[] = [];
+      const questionRect = document.querySelector(".floating-question-card")?.getBoundingClientRect();
+      const topRect = document.querySelector(".topbar")?.getBoundingClientRect();
+      const actionRect = document.querySelector(".decision-buttons, .mcq-grid")?.getBoundingClientRect();
+      const timerRect = document.querySelector(".timer-ring")?.getBoundingClientRect();
+      const guideRect = document.querySelector(".hand-guide-panel.open")?.getBoundingClientRect();
+      if (questionRect) rects.push({ left: questionRect.left - 120, top: questionRect.top - 96, right: questionRect.right + 120, bottom: questionRect.bottom + 96 });
+      if (topRect) rects.push({ left: topRect.left - 16, top: topRect.top - 16, right: topRect.right + 16, bottom: topRect.bottom + 24 });
+      if (actionRect) rects.push({ left: actionRect.left - 48, top: actionRect.top - 34, right: actionRect.right + 48, bottom: actionRect.bottom + 36 });
+      if (timerRect) rects.push({ left: timerRect.left - 28, top: timerRect.top - 28, right: timerRect.right + 28, bottom: timerRect.bottom + 28 });
+      if (guideRect) rects.push({ left: guideRect.left - 24, top: guideRect.top - 24, right: guideRect.right + 24, bottom: guideRect.bottom + 24 });
+      return rects;
+    };
+    const pickTarget = () => {
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const currentRect = element.getBoundingClientRect();
+      const boxWidth = Math.max(220, currentRect.width || Math.min(320, viewportWidth * .24));
+      const boxHeight = Math.max(96, currentRect.height || Math.min(120, viewportHeight * .14));
+      const safeMarginX = 32;
+      const safeMarginTop = 88;
+      const safeMarginBottom = 130;
+      const avoidRects = getAvoidRects();
+      let nextX = 24; let nextY = 100; let tries = 0; let valid = false;
+      while (tries < 56 && !valid) {
+        nextX = safeMarginX + Math.random() * Math.max(40, viewportWidth - boxWidth - safeMarginX * 2);
+        nextY = safeMarginTop + Math.random() * Math.max(40, viewportHeight - boxHeight - safeMarginTop - safeMarginBottom);
+        const candidate = { left: nextX, top: nextY, right: nextX + boxWidth, bottom: nextY + boxHeight };
+        valid = avoidRects.every((rect) => !intersects(candidate, rect));
+        tries += 1;
+      }
+      motion.tx = nextX;
+      motion.ty = nextY;
+      motion.trot = -5 + Math.random() * 10;
+      motion.tscale = .99 + Math.random() * .05;
+      motion.phaseX = Math.random() * Math.PI * 2;
+      motion.phaseY = Math.random() * Math.PI * 2;
+      motion.phaseDepth = Math.random() * Math.PI * 2;
+      motion.phaseRoll = Math.random() * Math.PI * 2;
+      motion.glowPhase = Math.random() * Math.PI * 2;
+      motion.bobAmpX = (ultraSpaceMode ? 18 : 10) + Math.random() * (ultraSpaceMode ? 22 : 12);
+      motion.bobAmpY = (ultraSpaceMode ? 10 : 6) + Math.random() * (ultraSpaceMode ? 16 : 10);
+      motion.bobSpeedX = ((ultraSpaceMode ? .22 : .18) + Math.random() * .16) * speed;
+      motion.bobSpeedY = ((ultraSpaceMode ? .18 : .15) + Math.random() * .14) * speed;
+      motion.depthAmp = (ultraSpaceMode ? 24 : 10) + Math.random() * (ultraSpaceMode ? 24 : 12);
+      motion.depthSpeed = ((ultraSpaceMode ? .12 : .09) + Math.random() * .12) * speed;
+      motion.rollAmp = (ultraSpaceMode ? 5 : 2.5) + Math.random() * (ultraSpaceMode ? 4 : 2.5);
+      motion.rollSpeed = ((ultraSpaceMode ? .11 : .08) + Math.random() * .1) * speed;
+    };
+    motion.x = Math.min(window.innerWidth * .14, 140);
+    motion.y = Math.min(window.innerHeight * .22, 160);
+    element.style.left = `${motion.x}px`;
+    element.style.top = `${motion.y}px`;
+    pickTarget();
+    let frame = 0; let previous = performance.now();
+    const animate = (now: number) => {
+      const delta = Math.min(32, now - previous || 16.67); previous = now;
+      const t = now * .001;
+      const blend = Math.min(.07, .018 * speed + .012 * (delta / 16.67));
+      motion.x += (motion.tx - motion.x) * blend;
+      motion.y += (motion.ty - motion.y) * blend;
+      motion.rot += (motion.trot - motion.rot) * blend * .65;
+      motion.scale += (motion.tscale - motion.scale) * blend * .42;
+      const orbitX = Math.sin(t * motion.bobSpeedX + motion.phaseX) * motion.bobAmpX;
+      const orbitY = Math.cos(t * motion.bobSpeedY + motion.phaseY) * motion.bobAmpY;
+      const depth = Math.sin(t * motion.depthSpeed + motion.phaseDepth) * motion.depthAmp;
+      const rollX = Math.cos(t * motion.rollSpeed + motion.phaseRoll) * motion.rollAmp;
+      const yaw = Math.sin(t * (motion.rollSpeed * .92) + motion.phaseX) * (motion.rollAmp * (ultraSpaceMode ? 2.4 : 1.6));
+      const glow = .94 + ((Math.sin(t * (.3 * speed) + motion.glowPhase) + 1) / 2) * (ultraSpaceMode ? .18 : .08);
+      element.style.left = `${motion.x}px`;
+      element.style.top = `${motion.y}px`;
+      element.style.transform = `translate3d(${orbitX}px, ${orbitY}px, ${depth}px) rotate(${motion.rot}deg) rotateX(${rollX}deg) rotateY(${yaw}deg) scale(${motion.scale})`;
+      element.style.filter = `brightness(${glow}) saturate(${ultraSpaceMode ? 1.18 : 1.06})`;
+      if (Math.abs(motion.tx - motion.x) < 16 && Math.abs(motion.ty - motion.y) < 16) pickTarget();
+      frame = window.requestAnimationFrame(animate);
+    };
+    frame = window.requestAnimationFrame(animate);
+    const handleResize = () => pickTarget();
+    window.addEventListener("resize", handleResize);
+    return () => { window.cancelAnimationFrame(frame); window.removeEventListener("resize", handleResize); };
+  }, [screen, mode, levelIndex, cardIndex, card?.label, card?.icon, answerFloatSpeed, ultraSpaceMode]);
 
   const saveReport = useCallback((player: PlayerGame, name: string) => {
     const total = player.records.length; const accuracy = total ? Math.round(player.records.filter(r => r.correct).length / total * 100) : 0;
@@ -658,9 +748,11 @@ export default function Home() {
           </nav>
         </header>
 
-        {settingsOpen && <aside className="settings-panel glass-panel" aria-label="ตั้งค่าการเข้าถึง"><div className="panel-heading"><Accessibility size={18} /><strong>การเข้าถึง</strong></div><label><span>ตัวอักษรขนาดใหญ่</span><input type="checkbox" checked={largeText} onChange={e => setLargeText(e.target.checked)} /></label><label><span>โหมดแยกสี</span><input type="checkbox" checked={colorBlind} onChange={e => setColorBlind(e.target.checked)} /></label><label><span>เสียงบรรยายไทย</span><input type="checkbox" checked={voiceOn} onChange={e => setVoiceOn(e.target.checked)} /></label></aside>}
+        {settingsOpen && <aside className="settings-panel glass-panel" aria-label="ตั้งค่าการเข้าถึง"><div className="panel-heading"><Accessibility size={18} /><strong>การเข้าถึง</strong></div><label><span>ตัวอักษรขนาดใหญ่</span><input type="checkbox" checked={largeText} onChange={e => setLargeText(e.target.checked)} /></label><label><span>โหมดแยกสี</span><input type="checkbox" checked={colorBlind} onChange={e => setColorBlind(e.target.checked)} /></label><label><span>เสียงบรรยายไทย</span><input type="checkbox" checked={voiceOn} onChange={e => setVoiceOn(e.target.checked)} /></label><label><span>ความเร็วกรอบคำตอบ</span><select value={answerFloatSpeed} onChange={e => setAnswerFloatSpeed(e.target.value as "slow" | "normal" | "fast")}><option value="slow">ช้า</option><option value="normal">ปกติ</option><option value="fast">เร็ว</option></select></label><label><span>Ultra Space</span><input type="checkbox" checked={ultraSpaceMode} onChange={e => setUltraSpaceMode(e.target.checked)} /></label></aside>}
 
-        {screen !== "teacher" && <div className={`hand-ai-visible-hud ${handReady ? "is-ready" : ""}`} aria-live="polite"><div className="hand-ai-state"><span className="hand-ai-icon">✋</span><span><strong>{handReady ? "HAND AI ACTIVE" : "กำลังเปิด HAND AI"}</strong><small>{gestureLabel}</small></span></div><div className="hand-command-row"><div className="hand-command"><b>👈</b><span>ปัดซ้าย</span><em>ตัดออก</em></div><div className="hand-command"><b>👉</b><span>ปัดขวา</span><em>เก็บไว้</em></div><div className="hand-command"><b>🤏</b><span>จีบนิ้ว</span><em>เลือก</em></div><div className="hand-command"><b>✊</b><span>กำมือ</span><em>เก็บ</em></div><div className="hand-command"><b>✋</b><span>ยกฝ่ามือ</span><em>Pause/Start</em></div><div className="hand-command"><b>🙌</b><span>สองมือ</span><em>Power</em></div></div></div>}
+        {screen === "lobby" && <div className={`hand-ai-visible-hud ${handReady ? "is-ready" : ""}`} aria-live="polite"><div className="hand-ai-state"><span className="hand-ai-icon">✋</span><span><strong>{handReady ? "HAND AI ACTIVE" : "กำลังเปิด HAND AI"}</strong><small>{gestureLabel}</small></span></div><div className="hand-command-row"><div className="hand-command"><b>👈</b><span>ปัดซ้าย</span><em>ตัดออก</em></div><div className="hand-command"><b>👉</b><span>ปัดขวา</span><em>เก็บไว้</em></div><div className="hand-command"><b>🤏</b><span>จีบนิ้ว</span><em>เลือก</em></div><div className="hand-command"><b>✊</b><span>กำมือ</span><em>เก็บ</em></div><div className="hand-command"><b>✋</b><span>ยกฝ่ามือ</span><em>Pause/Start</em></div><div className="hand-command"><b>🙌</b><span>สองมือ</span><em>Power</em></div></div></div>}
+
+        {screen === "game" && <><button className={`hand-guide-toggle ${handGuideOpen ? "active" : ""}`} onClick={() => setHandGuideOpen(v => !v)} aria-expanded={handGuideOpen} aria-label="เปิดคำอธิบายระบบมือ"><Hand size={18} /><span>วิธีใช้มือ</span><b>?</b></button><aside className={`hand-guide-panel glass-panel ${handGuideOpen ? "open" : ""}`} aria-label="คำอธิบายระบบมือ"><div className="hand-guide-head"><div><span className={`guide-live-dot ${handReady ? "ready" : ""}`} /><strong>HAND CONTROLS</strong><small>{handReady ? `กำลังตรวจจับ: ${gestureLabel}` : cameraMessage}</small></div><button onClick={() => setHandGuideOpen(false)} aria-label="ปิดคำอธิบาย"><X size={17} /></button></div><div className="hand-guide-grid"><div><b>👈</b><span><strong>ปัดซ้าย</strong><small>ตัดข้อมูล / ไม่สำคัญ</small></span></div><div><b>👉</b><span><strong>ปัดขวา</strong><small>เก็บข้อมูล / สำคัญ</small></span></div><div><b>🤏</b><span><strong>จีบนิ้วโป้ง+ชี้</strong><small>เลือกการ์ดหรือคำตอบ</small></span></div><div><b>✊</b><span><strong>กำมือหลังจีบ</strong><small>ยืนยัน / เก็บคำตอบ</small></span></div><div><b>✋</b><span><strong>แบฝ่ามือ</strong><small>เริ่มเกม / หยุดชั่วคราว</small></span></div><div><b>🙌</b><span><strong>ยกสองมือ</strong><small>ใช้ Focus Power</small></span></div></div><div className="hand-guide-note">{mode === "versus" ? <><strong>โหมด 2 คน:</strong> P1 อยู่ฝั่งซ้าย · P2 อยู่ฝั่งขวา · พื้นที่กลางเป็น SAFE ZONE และ Power ต้องเป็นสองมือของผู้เล่นคนเดียวกัน</> : <><strong>เคล็ดลับ:</strong> ให้กล้องเห็นฝ่ามือเต็ม ๆ แล้วปัดแนวนอนต่อเนื่อง ไม่ต้องเหวี่ยงแรง</>}</div></aside></>}
 
         {screen === "lobby" && <div className="lobby-shell">
           <div className="hero-copy">
@@ -682,7 +774,7 @@ export default function Home() {
 
         {screen === "game" && card && mode === "solo" && <div className="game-shell">
           <aside className="mission-panel glass-panel"><div className="level-id">LEVEL 0{level.id}</div><p className="eyebrow">{level.eyebrow}</p><h2>{level.title}</h2><p>{level.mission}</p><div className="subject-chip"><span>{level.subjectIcon}</span><div><small>กำลังสร้างนามธรรมของ</small><strong>{level.subject}</strong></div></div><div className="enemy-card"><span>{level.id === 5 ? "🤖" : "👾"}</span><div><small>ตรวจพบศัตรู</small><strong>{level.enemy}</strong></div></div></aside>
-          <section className="play-zone" aria-live="polite"><div className="timer-ring" style={{ "--timer": `${Math.min(100, timeLeft / 16 * 100)}%` } as CSSProperties}><span>{timeLeft}</span><small>วินาที</small></div><div className={`data-card floating-question-card ${players[0].feedback ? `motion-${players[0].feedback.motion} ${players[0].feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><span className="card-scan" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "DATA OBJECT"} · {cardIndex + 1}/{deck.length}</div><div className="card-icon">{card.icon}</div><h3>{card.label}</h3><p>{questionPrompt(card, level)}</p>{players[0].feedback && <span className={`score-pop ${players[0].feedback.correct ? "good" : "bad"}`}>{players[0].feedback.points > 0 ? "+" : ""}{players[0].feedback.points}</span>}</div>{questionMode(card) === "mcq" ? <div className="mcq-grid floating-answers">{(card.choices ?? []).map((choice, i) => <button key={`${choice}-${i}`} className={`mcq-option ${players[0].choiceIndex === i ? "selected" : ""}`} onClick={() => answerMcqForPlayer(0, i)} disabled={!!soloFeedback}><span>{String.fromCharCode(65 + i)}</span><strong>{choice}</strong>{players[0].choiceIndex === i && <em>เลือกอยู่</em>}</button>)}</div> : <div className="decision-buttons floating-answers"><button className="reject-button" onClick={() => classifyForPlayer(0, "noise")} disabled={!!soloFeedback}><ArrowLeft size={24} /><span>{card.leftLabel || "ไม่สำคัญ"}</span></button><button className="keep-button" onClick={() => classifyForPlayer(0, "essential")} disabled={!!soloFeedback}><span>{card.rightLabel || "เก็บไว้"}</span><ArrowRight size={24} /></button></div>}<button className="power-button" onClick={() => activatePower(0)} disabled={players[0].power === 0 || !!soloFeedback}><Zap size={17} fill="currentColor" /> Focus Vision<span>{players[0].power}</span></button></section>
+          <section className="play-zone" aria-live="polite"><div className="timer-ring" style={{ "--timer": `${Math.min(100, timeLeft / 16 * 100)}%` } as CSSProperties}><span>{timeLeft}</span><small>วินาที</small></div>{questionMode(card) !== "mcq" && <div ref={floatingAnswerRef} className={`floating-answer-box ${ultraSpaceMode ? "ultra-space" : ""} ${players[0].feedback ? "answer-fast" : ""}`}><span className="answer-orbit orbit-a" /><span className="answer-orbit orbit-b" /><div className="floating-answer-icon">{card.icon}</div><div className="floating-answer-copy"><small>คำตอบ</small><strong>{card.label}</strong></div></div>}<div className={`data-card floating-question-card ${questionMode(card) !== "mcq" ? "question-only-card" : ""} ${players[0].feedback ? `motion-${players[0].feedback.motion} ${players[0].feedback.correct ? "is-correct" : "is-wrong"}` : ""}`}><span className="card-aura" /><span className="card-scan" /><div className="card-label">{questionMode(card) === "mcq" ? "MULTI CHOICE" : "QUESTION"} · {cardIndex + 1}/{deck.length}</div>{questionMode(card) === "mcq" ? <div className="card-icon">{card.icon}</div> : <span className="question-title">คำถาม</span>}{questionMode(card) === "mcq" && <h3>{card.label}</h3>}<p className={questionMode(card) !== "mcq" ? "question-prompt-only" : undefined}>{questionPrompt(card, level)}</p>{players[0].feedback && <span className={`score-pop ${players[0].feedback.correct ? "good" : "bad"}`}>{players[0].feedback.points > 0 ? "+" : ""}{players[0].feedback.points}</span>}</div>{questionMode(card) === "mcq" ? <div className="mcq-grid floating-answers">{(card.choices ?? []).map((choice, i) => <button key={`${choice}-${i}`} className={`mcq-option ${players[0].choiceIndex === i ? "selected" : ""}`} onClick={() => answerMcqForPlayer(0, i)} disabled={!!soloFeedback}><span>{String.fromCharCode(65 + i)}</span><strong>{choice}</strong>{players[0].choiceIndex === i && <em>เลือกอยู่</em>}</button>)}</div> : <div className="decision-buttons floating-answers"><button className="reject-button" onClick={() => classifyForPlayer(0, "noise")} disabled={!!soloFeedback}><ArrowLeft size={24} /><span>{card.leftLabel || "ไม่สำคัญ"}</span></button><button className="keep-button" onClick={() => classifyForPlayer(0, "essential")} disabled={!!soloFeedback}><span>{card.rightLabel || "เก็บไว้"}</span><ArrowRight size={24} /></button></div>}<button className="power-button" onClick={() => activatePower(0)} disabled={players[0].power === 0 || !!soloFeedback}><Zap size={17} fill="currentColor" /> Focus Vision<span>{players[0].power}</span></button></section>
           <aside className="hud-panel glass-panel"><div className="hud-score"><small>SCORE</small><strong>{players[0].score.toLocaleString("th-TH")}</strong></div><div className="hud-row"><span>ความแม่นยำ</span><strong>{soloAccuracy}%</strong></div><div className="accuracy-bar"><i style={{ width: `${soloAccuracy}%` }} /></div><div className="hud-row"><span>Combo</span><strong className="combo-text">×{players[0].combo}</strong></div><div className="life-row">{[0, 1, 2].map(life => <span key={life} className={life < players[0].lives ? "alive" : ""}>◆</span>)}</div><button className="pause-button" onClick={() => setPaused(v => !v)}>{paused ? <Play size={17} /> : <Pause size={17} />} {paused ? "เล่นต่อ" : "หยุดชั่วคราว"}</button><div className="gesture-tip"><Hand size={20} /><div><strong>Gesture Engine</strong><small>{gestureLabel}</small></div></div></aside>
           <div className="bottom-progress"><div><span style={{ width: `${progress}%` }} /></div><small>{Math.round(progress)}% ของภารกิจ</small></div>
           {soloFeedback && <div className="feedback-backdrop"><div ref={feedbackRef} className={`feedback-card ${soloFeedback.correct ? "correct" : "wrong"}`}><span className="feedback-icon">{soloFeedback.correct ? <Check size={31} /> : <X size={31} />}</span><p>{soloFeedback.correct ? "+ คะแนนความเข้าใจ" : "เรียนรู้จากข้อผิดพลาด"}</p><h3>{soloFeedback.title}</h3><div className="why-box"><strong>เพราะอะไร?</strong><span>{soloFeedback.body}</span></div><button className="primary-button" onClick={advanceCard}>ไปต่อ <ArrowRight size={19} /></button></div></div>}
