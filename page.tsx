@@ -1,6 +1,6 @@
-"use client";
-
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createRoot } from "react-dom/client";
+import "./globals.css";
 import {
   Accessibility, ArrowLeft, ArrowRight, BarChart3, Camera, Check, ChevronLeft,
   Download, FileSpreadsheet, Gamepad2, GraduationCap, Hand, Keyboard, LogOut,
@@ -570,3 +570,8 @@ export default function Home() {
     </main>
   );
 }
+
+
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("ไม่พบ #root สำหรับเริ่ม Abstract Hero AR");
+createRoot(rootElement).render(<Home />);

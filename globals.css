@@ -1,5 +1,3 @@
-@import "tailwindcss";
-
 :root{--ink:#f7fbff;--muted:#9db0cb;--cyan:#72e8ff;--purple:#a887ff;--deep:#070b1a;--panel:rgba(13,24,50,.63);--line:rgba(164,212,255,.18);--success:#71f8bd;--danger:#ff6689}
 *{box-sizing:border-box}html{background:var(--deep)}body{margin:0;background:var(--deep);color:var(--ink);font-family:"Noto Sans Thai","Leelawadee UI",Tahoma,Arial,sans-serif}button,input{font:inherit}button{color:inherit}button:focus-visible,input:focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
 .ar-stage{position:relative;min-height:100svh;overflow:hidden;isolation:isolate;background:radial-gradient(circle at 72% 42%,rgba(54,50,126,.42),transparent 32%),linear-gradient(145deg,#071027 0%,#090b1d 54%,#130b29 100%)}

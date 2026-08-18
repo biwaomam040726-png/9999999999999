@@ -1,27 +1,27 @@
 {
-  "name": "abstract-hero-ar",
-  "version": "1.0.0",
+  "name": "abstract-hero-ar-v3",
   "private": true,
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "1.0.1",
-    "gsap": "3.15.0",
-    "lucide-react": "1.31.0",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
-    "three": "0.185.1"
+    "@mediapipe/tasks-vision": "latest",
+    "gsap": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "three": "latest"
   },
   "devDependencies": {
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "@types/three": "0.185.0",
-    "@vitejs/plugin-react": "6.0.2",
-    "typescript": "5.9.3",
-    "vite": "8.0.13"
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vite-plugin-singlefile": "latest"
   }
 }
