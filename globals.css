@@ -264,3 +264,22 @@ body.hand-game-active .hand-ai-visible-hud{bottom:14px}
 .mouse-ready-note>span{font-size:1.45rem}.mouse-ready-note strong,.mouse-ready-note small{display:block}.mouse-ready-note strong{color:#8ff4d0;font-size:.72rem}.mouse-ready-note small{margin-top:2px;color:#7894a9;font-size:.61rem;line-height:1.45}.mouse-ready-note.compact{margin-top:10px;padding:9px 11px}
 .mouse-mode .hand-guide-toggle,.mouse-mode .hand-guide-panel{display:none!important}
 @media(max-width:760px){.control-mode-heading{display:block}.control-mode-heading small{display:block;margin-top:3px;text-align:left}.control-mode-options{grid-template-columns:1fr}.control-mode-options>button{min-height:70px}.control-mode-picker{padding:12px}}
+
+
+/* V19: calmer swipe + solo-style floating answers in VS */
+.versus-lane{position:relative;overflow:visible;isolation:isolate}
+.versus-question-only{width:min(100%,330px)!important;min-height:195px!important;padding:34px 20px 48px!important;margin:132px auto 0;justify-self:center;z-index:3}
+.versus-question-only .card-icon,.versus-question-only h3{display:none!important}
+.versus-question-only .versus-question-prompt{max-width:270px!important;margin:8px auto 0!important;color:#eef8ff!important;font-size:clamp(.9rem,1.2vw,1.02rem)!important;font-weight:750!important;line-height:1.65!important}
+.versus-answer-float{position:absolute;z-index:8;top:72px;width:clamp(205px,18vw,250px);min-height:92px;padding:13px 16px;display:flex;align-items:center;gap:12px;border:1px solid rgba(125,229,255,.34);border-radius:21px;background:linear-gradient(145deg,rgba(27,48,88,.92),rgba(18,28,71,.90));box-shadow:0 18px 48px rgba(0,0,0,.28),0 0 44px rgba(83,203,255,.12);backdrop-filter:blur(16px);pointer-events:none;transform-style:preserve-3d;will-change:transform}
+.player-2 .versus-answer-float{border-color:rgba(193,151,255,.34);background:linear-gradient(145deg,rgba(49,35,96,.92),rgba(24,22,72,.90));box-shadow:0 18px 48px rgba(0,0,0,.28),0 0 44px rgba(174,116,255,.12)}
+.versus-answer-icon{width:66px;height:66px;flex:0 0 auto;display:grid;place-items:center;border-radius:18px;font-size:2.25rem;border:1px solid rgba(177,231,255,.22);background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.2),transparent 34%),linear-gradient(145deg,rgba(90,211,250,.22),rgba(151,114,245,.18));box-shadow:0 0 28px rgba(103,213,255,.10)}
+.versus-answer-float>div:last-child{display:grid;gap:3px;min-width:0}.versus-answer-float small{font-size:.58rem;letter-spacing:.14em;color:#78dcfa;font-weight:900}.versus-answer-float strong{font-size:clamp(1rem,1.4vw,1.3rem);line-height:1.18;color:#f5fbff;overflow-wrap:anywhere}
+.player-answer-1{left:18px;animation:v19VsFloatP1 8.8s ease-in-out infinite}
+.player-answer-2{right:18px;animation:v19VsFloatP2 9.3s ease-in-out .5s infinite}
+@keyframes v19VsFloatP1{0%,100%{transform:translate3d(0,0,0) rotate(-2deg) rotateY(0deg)}24%{transform:translate3d(42px,-10px,22px) rotate(2deg) rotateY(8deg)}52%{transform:translate3d(82px,20px,34px) rotate(-1deg) rotateY(-7deg)}76%{transform:translate3d(24px,34px,16px) rotate(2deg) rotateY(5deg)}}
+@keyframes v19VsFloatP2{0%,100%{transform:translate3d(0,0,0) rotate(2deg) rotateY(0deg)}24%{transform:translate3d(-42px,-10px,22px) rotate(-2deg) rotateY(-8deg)}52%{transform:translate3d(-82px,20px,34px) rotate(1deg) rotateY(7deg)}76%{transform:translate3d(-24px,34px,16px) rotate(-2deg) rotateY(-5deg)}}
+.versus-answer-float.ultra-space:after{content:"";position:absolute;inset:-16px;border-radius:28px;border:1px solid rgba(123,226,255,.13);filter:drop-shadow(0 0 14px rgba(110,208,255,.12));pointer-events:none}
+.player-2 .versus-answer-float.ultra-space:after{border-color:rgba(190,139,255,.14)}
+@media(max-width:1100px){.versus-question-only{width:min(100%,300px)!important;min-height:185px!important;margin-top:122px}.versus-answer-float{width:205px;top:70px}.player-answer-1{left:8px}.player-answer-2{right:8px}}
+@media(max-width:760px){.versus-answer-float{position:relative;top:auto!important;left:auto!important;right:auto!important;width:min(86vw,280px);margin:8px auto 4px;animation:none!important}.versus-question-only{margin-top:6px!important}}
